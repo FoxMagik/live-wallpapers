@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eldergrove</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+// ============================================================================
+// livewall runtime — copy this block unchanged into every scene.
+//
+// Scene contract:
+//   * Self-contained single file. No network requests, no external assets.
+//   * Draw in a virtual 1920x1080 space; the runtime scales it to "cover".
+//   * Put ALL timing in update(dt) / sim-time timers (after/every). Never use
+//     setTimeout/setInterval for animation — those keep running while paused
+//     and break ?still rendering.
+//   * Use rand() (seeded) instead of Math.random().
+//
+// URL params:  ?fps=30      frame cap (host passes 30; default 60)
+//              ?seed=123    deterministic randomness
+//              ?still=1&t=8 simulate 8s of scene time, draw one frame, stop
+//                           (used to generate theme background stills)
+// Host API:    window.livewall.pause() / resume() / paused
+// ============================================================================
+const LW = (() => {
+  const params = new URLSearchParams(location.search);
+  const VW = 1920, VH = 1080;
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  let seed = (Number(params.get('seed')) || (Date.now() % 2147483647)) >>> 0;
+  function rand() { // mulberry32
+    seed = (seed + 0x6D2B79F5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const range = (a, b) => a + rand() * (b - a);
+  const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+  // sim-time scheduler
+  let simTime = 0;
+  const timers = [];
+  function after(sec, fn) { timers.push({ at: simTime + sec, fn }); }
+  function every(minSec, maxSec, fn) {
+    const go = () => { fn(); after(range(minSec, maxSec), go); };
+    after(range(minSec, maxSec), go);
+  }
+  function runTimers() {
+    for (let i = timers.length - 1; i >= 0; i--) {
+      if (timers[i].at <= simTime) { const t = timers.splice(i, 1)[0]; t.fn(); }
+    }
+  }
+
+  const view = { scale: 1, ox: 0, oy: 0, w: 0, h: 0, dpr: 1 };
+  function resize() {
+    view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    view.w = Math.round(innerWidth * view.dpr);
+    view.h = Math.round(innerHeight * view.dpr);
+    canvas.width = view.w; canvas.height = view.h;
+    view.scale = Math.max(view.w / VW, view.h / VH);
+    view.ox = (view.w - VW * view.scale) / 2;
+    view.oy = (view.h - VH * view.scale) / 2;
+    if (scene.resize) scene.resize(view);
+    drawFrame();
+  }
+
+  let scene = null, paused = false, last = 0, raf = 0;
+  const fps = Math.max(1, Number(params.get('fps')) || 60);
+  const still = params.has('still');
+
+  function step(dt) { simTime += dt; runTimers(); scene.update(dt, simTime); }
+  function drawFrame() {
+    if (!scene) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    scene.draw(ctx, simTime);
+  }
+  function loop(now) {
+    raf = 0;
+    if (paused) return;
+    raf = requestAnimationFrame(loop);
+    if (!last) { last = now; return; }
+    const elapsed = now - last;
+    if (elapsed < 1000 / fps - 2) return;
+    last = now;
+    step(Math.min(elapsed / 1000, 0.1));
+    drawFrame();
+  }
+  function pause() { paused = true; if (raf) cancelAnimationFrame(raf); raf = 0; }
+  function resume() { if (still) return; paused = false; last = 0; if (!raf) raf = requestAnimationFrame(loop); }
+
+  function start(s) {
+    scene = s;
+    if (scene.init) scene.init(view);
+    addEventListener('resize', resize);
+    resize();
+    if (still) {
+      const T = Number(params.get('t')) || 8;
+      while (simTime < T) step(1 / 30);
+      drawFrame();
+      document.title += ' [still]';
+      return;
+    }
+    document.addEventListener('visibilitychange', () => document.hidden ? pause() : resume());
+    resume();
+  }
+
+  window.livewall = { pause, resume, get paused() { return paused; } };
+  return { VW, VH, ctx, rand, range, pick, after, every, start, view,
+           get time() { return simTime; } };
+})();
+// ============================== end runtime =================================
+
+// ---- scene: Eldergrove ------------------------------------------------------
+// An enchanted woodland at dusk: layered forest silhouettes with slow parallax,
+// golden light shafts that come and go, wandering firefly wisps, falling
+// leaves, and rare events (a ring of wisps gathering, an ancient rune stone
+// waking up). All static art is pre-rendered in resize().
+const { VW, VH, rand, range, pick, after, every } = LW;
+const M = 70;                    // horizontal margin on parallax layers
+const TAU = Math.PI * 2;
+const CX = VW / 2;
+const STONE = { x: 1215, y: 884, h: 168, w: 74 };
+
+let geoSeed = 1, ps = 1;
+const L = {};                    // pre-rendered layers
+const S = {                      // dynamic state
+  flies: [], leaves: [], rays: [],
+  gather: null, rune: null,
+};
+
+function mkRng(s) {
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function layer(w, h) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.ceil(w * ps)); c.height = Math.max(1, Math.ceil(h * ps));
+  const g = c.getContext('2d'); g.scale(ps, ps);
+  return { c, g, w, h };
+}
+const smooth = (x) => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
+
+// ---------------------------------------------------------------- art helpers
+function trunk(g, R, x, w, topY, baseY, lean, col, rim, rimSide) {
+  const flare = w * (0.45 + R() * 0.5);
+  const tw = w * 0.82;
+  const h = baseY - topY;
+  g.beginPath();
+  g.moveTo(x - tw / 2 + lean, topY);
+  g.bezierCurveTo(x - tw / 2 + lean * 0.5, topY + h * 0.45, x - w / 2, baseY - w * 1.3, x - w / 2 - flare, baseY + 6);
+  // little root bumps
+  const n = 2 + Math.floor(R() * 3);
+  for (let i = 1; i <= n; i++) {
+    const rx = x - w / 2 - flare + (w + flare * 2) * (i / (n + 1));
+    g.quadraticCurveTo(rx - 6, baseY - 3 - R() * 6, rx, baseY + 8);
+  }
+  g.lineTo(x + w / 2 + flare, baseY + 6);
+  g.bezierCurveTo(x + w / 2, baseY - w * 1.3, x + tw / 2 + lean * 0.5, topY + h * 0.45, x + tw / 2 + lean, topY);
+  g.closePath();
+  const gr = g.createLinearGradient(x - w / 2 - 4, 0, x + w / 2 + 4, 0);
+  if (rimSide > 0) { gr.addColorStop(0, col); gr.addColorStop(0.72, col); gr.addColorStop(1, rim); }
+  else { gr.addColorStop(0, rim); gr.addColorStop(0.28, col); gr.addColorStop(1, col); }
+  g.fillStyle = gr; g.fill();
+}
+function branch(g, x, y, len, ang, w, col) {
+  const ex = x + Math.cos(ang) * len, ey = y + Math.sin(ang) * len;
+  const nx = -Math.sin(ang), ny = Math.cos(ang);
+  const mx = (x + ex) / 2 + nx * len * 0.12, my = (y + ey) / 2 + ny * len * 0.12 - len * 0.08;
+  g.beginPath();
+  g.moveTo(x + nx * w, y + ny * w);
+  g.quadraticCurveTo(mx + nx * w * 0.5, my + ny * w * 0.5, ex, ey);
+  g.quadraticCurveTo(mx - nx * w * 0.5, my - ny * w * 0.5, x - nx * w, y - ny * w);
+  g.closePath(); g.fillStyle = col; g.fill();
+  return [ex, ey];
+}
+function blob(g, x, y, r) { g.moveTo(x + r, y); g.arc(x, y, r, 0, TAU); }
+function groundPath(g, R, y0, amp, x0, x1) {
+  g.beginPath(); g.moveTo(x0, VH + 10);
+  const p1 = R() * TAU, p2 = R() * TAU;
+  for (let x = x0; x <= x1; x += 20) {
+    g.lineTo(x, y0 + Math.sin(x * 0.004 + p1) * amp + Math.sin(x * 0.011 + p2) * amp * 0.4);
+  }
+  g.lineTo(x1, VH + 10); g.closePath();
+}
+function fern(g, x, y, len, ang, col, R) {
+  g.strokeStyle = col; g.fillStyle = col; g.lineCap = 'round';
+  const bend = (R() - 0.5) * 0.9 + (ang < -Math.PI / 2 ? -0.5 : 0.5);
+  let px = x, py = y, a = ang;
+  const steps = 14;
+  for (let i = 0; i < steps; i++) {
+    const f = i / steps, seg = len / steps;
+    const nx = px + Math.cos(a) * seg, ny = py + Math.sin(a) * seg;
+    g.lineWidth = 3.2 * (1 - f) + 0.6;
+    g.beginPath(); g.moveTo(px, py); g.lineTo(nx, ny); g.stroke();
+    const ll = len * 0.28 * Math.sin(Math.PI * (0.15 + f * 0.85)) * (1 - f * 0.4);
+    for (const s of [-1, 1]) {
+      const la = a + s * 1.05;
+      g.beginPath();
+      g.moveTo(nx, ny);
+      g.quadraticCurveTo(nx + Math.cos(la) * ll * 0.5, ny + Math.sin(la) * ll * 0.5 - 3,
+        nx + Math.cos(la + s * 0.25) * ll, ny + Math.sin(la + s * 0.25) * ll + 4);
+      g.lineWidth = 2.6 * (1 - f) + 0.8; g.stroke();
+    }
+    px = nx; py = ny; a += bend / steps;
+  }
+}
+
+// --------------------------------------------------------------------- build
+function build() {
+  ps = Math.min(Math.max(LW.view.scale, 0.5), 2);
+  const W = VW + M * 2;
+
+  // ---- far: sky, glow, distant trees ----
+  {
+    const R = mkRng(geoSeed);
+    const ly = layer(W, VH), g = ly.g;
+    g.translate(M, 0);
+    let gr = g.createLinearGradient(0, 0, 0, VH);
+    gr.addColorStop(0, '#040a07'); gr.addColorStop(0.3, '#0b1c13');
+    gr.addColorStop(0.55, '#1f3a25'); gr.addColorStop(0.7, '#3a4a2a');
+    gr.addColorStop(0.82, '#1c2f1e'); gr.addColorStop(1, '#0a140d');
+    g.fillStyle = gr; g.fillRect(-M, 0, W, VH);
+    // warm glow of a distant clearing
+    gr = g.createRadialGradient(CX - 40, 650, 10, CX - 40, 650, 820);
+    gr.addColorStop(0, 'rgba(255,214,130,0.85)'); gr.addColorStop(0.12, 'rgba(240,180,90,0.55)');
+    gr.addColorStop(0.35, 'rgba(190,140,60,0.22)'); gr.addColorStop(0.7, 'rgba(120,110,50,0.06)');
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(-M, 0, W, VH);
+    // very distant trunk ranks (two depths)
+    for (const [cnt, col, rim, wmin, wmax, base, alpha] of [
+      [46, '#4d5f3c', '#9a9058', 5, 13, 790, 0.45],
+      [32, '#2e4530', '#7a7646', 10, 24, 815, 0.75],
+    ]) {
+      g.globalAlpha = alpha;
+      for (let i = 0; i < cnt; i++) {
+        const x = -M + R() * W, w = wmin + R() * (wmax - wmin);
+        trunk(g, R, x, w, -20, base + R() * 20, (R() - 0.5) * 30, col, rim, x < CX ? 1 : -1);
+      }
+      g.globalAlpha = 1;
+      // canopy band for this rank
+      g.fillStyle = col; g.globalAlpha = alpha * 0.9; g.beginPath();
+      for (let x = -M; x < W; x += 30) blob(g, x + R() * 20, 40 + R() * 120 + Math.abs(x - CX) * 0.06, 50 + R() * 50);
+      g.fill(); g.globalAlpha = 1;
+      // haze over this rank
+      gr = g.createLinearGradient(0, 480, 0, 880);
+      gr.addColorStop(0, 'rgba(150,160,100,0)'); gr.addColorStop(0.6, 'rgba(160,160,100,0.16)');
+      gr.addColorStop(1, 'rgba(120,130,80,0.05)');
+      g.fillStyle = gr; g.fillRect(-M, 480, W, 400);
+    }
+    // distant ground
+    groundPath(g, R, 818, 10, -M, W - M);
+    gr = g.createLinearGradient(0, 800, 0, VH);
+    gr.addColorStop(0, '#34452a'); gr.addColorStop(0.3, '#1d2e1c'); gr.addColorStop(1, '#0b140c');
+    g.fillStyle = gr; g.fill();
+    L.far = ly;
+  }
+
+  // ---- mid: trees, bushes, standing stone ----
+  {
+    const R = mkRng(geoSeed + 101);
+    const ly = layer(W, VH), g = ly.g;
+    g.translate(M, 0);
+    const col = '#0d1a12', rim = '#4a4524';
+    const xs = [250, 420, 610, 760, 1330, 1470, 1640, 1790, 900, 1080];
+    for (let i = 0; i < xs.length; i++) {
+      const x = xs[i] + (R() - 0.5) * 70;
+      const w = i >= 8 ? 14 + R() * 8 : 30 + R() * 34;
+      const base = 868 + R() * 26;
+      trunk(g, R, x, w, -20, base, (R() - 0.5) * 50, col, rim, x < CX ? 1 : -1);
+      const nb = 1 + Math.floor(R() * 3);
+      for (let b = 0; b < nb; b++) {
+        const by = 120 + R() * 380, side = R() < 0.5 ? -1 : 1;
+        const ang = side > 0 ? -0.5 - R() * 0.5 : Math.PI + 0.5 + R() * 0.5;
+        const [ex, ey] = branch(g, x + side * w * 0.3, by, 70 + R() * 120, ang, w * 0.14 + 2, col);
+        g.beginPath(); for (let k = 0; k < 40; k++) {
+          const a = R() * TAU, d = Math.sqrt(R());
+          blob(g, ex + Math.cos(a) * d * 60, ey + Math.sin(a) * d * 32 - 6, 3 + R() * 6 * (1 - d * 0.5));
+        }
+        g.fillStyle = col; g.fill();
+      }
+    }
+    // ground
+    groundPath(g, R, 892, 8, -M, W - M);
+    let gr = g.createLinearGradient(0, 870, 0, VH);
+    gr.addColorStop(0, '#1d2c1a'); gr.addColorStop(0.25, '#101c12'); gr.addColorStop(1, '#070d09');
+    g.fillStyle = gr; g.fill();
+    // bushes
+    g.fillStyle = '#0c1810'; g.beginPath();
+    for (let i = 0; i < 26; i++) {
+      const x = -M + R() * W;
+      if (Math.abs(x - STONE.x) < 90) continue;
+      for (let k = 0; k < 5; k++) blob(g, x + (R() - 0.5) * 90, 892 - R() * 26, 14 + R() * 26);
+    }
+    g.fill();
+    // standing stone
+    const { x: sx, y: sy, h: sh, w: sw } = STONE;
+    g.beginPath();
+    g.moveTo(sx - sw / 2 - 10, sy + 6);
+    g.lineTo(sx - sw / 2 - 2, sy - sh * 0.35);
+    g.lineTo(sx - sw / 2 + 6, sy - sh * 0.78);
+    g.lineTo(sx - sw * 0.18, sy - sh * 1.02);
+    g.lineTo(sx + sw * 0.12, sy - sh * 0.97);
+    g.lineTo(sx + sw / 2 - 4, sy - sh * 0.82);
+    g.lineTo(sx + sw / 2 + 2, sy - sh * 0.4);
+    g.lineTo(sx + sw / 2 + 9, sy + 6);
+    g.closePath();
+    gr = g.createLinearGradient(sx - sw / 2, 0, sx + sw / 2, 0);
+    gr.addColorStop(0, '#4a4a32'); gr.addColorStop(0.25, '#26302a'); gr.addColorStop(1, '#121a16');
+    g.fillStyle = gr; g.fill();
+    g.save(); g.clip();
+    gr = g.createLinearGradient(0, sy - sh, 0, sy);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.45)');
+    g.fillStyle = gr; g.fillRect(sx - sw, sy - sh, sw * 2, sh + 10);
+    g.fillStyle = 'rgba(70,96,46,0.55)'; g.beginPath();
+    for (let k = 0; k < 9; k++) blob(g, sx + (R() - 0.5) * sw, sy - R() * 30, 6 + R() * 12);
+    for (let k = 0; k < 5; k++) blob(g, sx - 10 + (R() - 0.5) * sw * 0.7, sy - sh + R() * 18, 5 + R() * 9);
+    g.fill();
+    g.restore();
+    // carved rune (unlit)
+    runePath(g, sx, sy - sh * 0.5, 0.72);
+    g.strokeStyle = 'rgba(8,10,6,0.7)'; g.lineWidth = 4; g.lineCap = 'round'; g.lineJoin = 'round'; g.stroke();
+    // grass tufts round the stone
+    g.fillStyle = '#0c1810'; g.beginPath();
+    for (let k = 0; k < 7; k++) blob(g, sx + (k - 3) * 18 + (R() - 0.5) * 8, sy + 4, 10 + R() * 8);
+    g.fill();
+    L.mid = ly;
+  }
+
+  // ---- rune glow sprite ----
+  {
+    const ly = layer(240, 300), g = ly.g;
+    runePath(g, 120, 150, 0.72);
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    g.shadowColor = 'rgba(255,190,70,1)';
+    g.shadowBlur = 26 * ps; g.strokeStyle = 'rgba(255,200,90,0.9)'; g.lineWidth = 7; g.stroke();
+    g.shadowBlur = 10 * ps; g.strokeStyle = 'rgba(255,225,150,1)'; g.lineWidth = 4; g.stroke();
+    g.shadowBlur = 0; g.strokeStyle = 'rgba(255,250,225,1)'; g.lineWidth = 1.6; g.stroke();
+    L.rune = ly;
+  }
+
+  // ---- near: big trunks + fern floor ----
+  {
+    const R = mkRng(geoSeed + 202);
+    const ly = layer(W, VH), g = ly.g;
+    g.translate(M, 0);
+    const col = '#050a07', rim = '#1f1d0f';
+    for (const [x, w] of [[30, 170], [255, 92], [1690, 120], [1905, 190], [585, 40]]) {
+      trunk(g, R, x + (R() - 0.5) * 30, w, -30, 1010 + R() * 30, (R() - 0.5) * 40, col, rim, x < CX ? 1 : -1);
+    }
+    // a low arching branch top-right
+    branch(g, 1650, 300, 300, Math.PI + 0.35, 13, col);
+    groundPath(g, R, 1012, 14, -M, W - M);
+    g.fillStyle = col; g.fill();
+    for (let i = 0; i < 26; i++) {
+      const x = -M + R() * W;
+      const mid = Math.abs(x - CX) < 380;
+      const len = (mid ? 50 : 90) + R() * (mid ? 60 : 110);
+      const n = 2 + Math.floor(R() * 3);
+      for (let k = 0; k < n; k++) {
+        const a = -Math.PI / 2 + (R() - 0.5) * 1.8;
+        fern(g, x + (R() - 0.5) * 30, 1030 + R() * 20, len * (0.7 + R() * 0.4), a, col, R);
+      }
+    }
+    // grass blades
+    g.fillStyle = col;
+    for (let i = 0; i < 260; i++) {
+      const x = -M + R() * W, h = 14 + R() * 46, lean = (R() - 0.5) * 26;
+      g.beginPath(); g.moveTo(x - 2.5, 1040); g.quadraticCurveTo(x + lean * 0.3, 1030 - h * 0.6, x + lean, 1028 - h);
+      g.quadraticCurveTo(x + lean * 0.3 + 2, 1030 - h * 0.6, x + 2.5, 1040); g.fill();
+    }
+    L.near = ly;
+  }
+
+  // ---- canopy: overhanging foliage + vines (sways a little) ----
+  {
+    const R = mkRng(geoSeed + 303);
+    const ly = layer(W, 760), g = ly.g;
+    g.translate(M, 0);
+    const prof = (x) => {
+      const d = Math.abs(x - CX + 60) / 1000;
+      return 34 + 250 * Math.pow(d, 1.7) + Math.sin(x * 0.013 + 1) * 16 + Math.sin(x * 0.0047) * 28
+        + Math.max(0, Math.sin(x * 0.031)) * 22 * d;
+    };
+    const blobs = [];
+    for (let x = -M - 20; x < W; x += 16) {
+      const y = prof(x);
+      blobs.push([x + (R() - 0.5) * 14, y + (R() - 0.5) * 22, 16 + R() * 26]);
+      if (R() < 0.35) blobs.push([x + (R() - 0.5) * 30, y + 20 + R() * 30, 8 + R() * 14]);
+    }
+    // golden underside rim
+    g.fillStyle = 'rgba(120,100,40,0.55)'; g.beginPath();
+    for (const [x, y, r] of blobs) blob(g, x + 1, y + 3.5, r);
+    g.fill();
+    g.fillStyle = '#040806';
+    g.beginPath(); g.moveTo(-M - 40, -10);
+    for (let x = -M - 40; x <= W; x += 20) g.lineTo(x, prof(x));
+    g.lineTo(W, -10); g.closePath(); g.fill();
+    g.beginPath(); for (const [x, y, r] of blobs) blob(g, x, y, r); g.fill();
+    // hanging vines / moss strands
+    g.strokeStyle = '#040806'; g.lineCap = 'round';
+    for (let i = 0; i < 46; i++) {
+      const x = -M + R() * W;
+      const y0 = prof(x) + 6, len = 30 + R() * (Math.abs(x - CX) < 300 ? 70 : 170);
+      g.lineWidth = 1.2 + R() * 1.8;
+      const sw = (R() - 0.5) * 24;
+      g.beginPath(); g.moveTo(x, y0); g.quadraticCurveTo(x + sw, y0 + len * 0.5, x + sw * 0.4, y0 + len); g.stroke();
+      g.fillStyle = '#040806'; g.beginPath();
+      for (let k = 0; k < len / 14; k++) {
+        const f = (k * 14) / len;
+        blob(g, x + sw * (f < 0.5 ? f * 1.5 : 0.75 - (f - 0.5) * 0.7) + (R() - 0.5) * 6, y0 + k * 14, 2 + R() * 3);
+      }
+      g.fill();
+    }
+    L.canopy = ly;
+  }
+
+  // ---- fog bands ----
+  for (const [key, a, seedOff] of [['fogA', 0.12, 404], ['fogB', 0.10, 505]]) {
+    const R = mkRng(geoSeed + seedOff);
+    const ly = layer(2400, 300), g = ly.g;
+    for (let i = 0; i < 60; i++) {
+      const x = R() * 2400, y = 150 + (R() - 0.5) * 120, r = 80 + R() * 160;
+      for (const ox of [-2400, 0, 2400]) {
+        const gr = g.createRadialGradient(x + ox, y, 0, x + ox, y, r);
+        gr.addColorStop(0, `rgba(175,185,140,${a})`); gr.addColorStop(1, 'rgba(175,185,140,0)');
+        g.fillStyle = gr;
+        g.save(); g.translate(x + ox, y); g.scale(1, 0.38); g.translate(-(x + ox), -y);
+        g.fillRect(x + ox - r, y - r, r * 2, r * 2); g.restore();
+      }
+    }
+    L[key] = ly;
+  }
+
+  // ---- light shaft sprite ----
+  {
+    const ly = layer(260, 1200), g = ly.g;
+    const gr = g.createLinearGradient(0, 0, 260, 0);
+    gr.addColorStop(0, 'rgba(255,205,120,0)'); gr.addColorStop(0.3, 'rgba(255,205,120,0.6)');
+    gr.addColorStop(0.5, 'rgba(255,220,150,1)'); gr.addColorStop(0.7, 'rgba(255,205,120,0.6)');
+    gr.addColorStop(1, 'rgba(255,205,120,0)');
+    g.fillStyle = gr;
+    g.beginPath(); g.moveTo(85, 0); g.lineTo(175, 0); g.lineTo(260, 1200); g.lineTo(0, 1200); g.closePath(); g.fill();
+    g.globalCompositeOperation = 'destination-in';
+    const vg = g.createLinearGradient(0, 0, 0, 1200);
+    vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(0.12, 'rgba(0,0,0,1)');
+    vg.addColorStop(0.55, 'rgba(0,0,0,0.55)'); vg.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = vg; g.fillRect(0, 0, 260, 1200);
+    L.ray = ly;
+  }
+
+  // ---- glow sprites ----
+  {
+    const ly = layer(64, 64), g = ly.g;
+    const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,240,180,1)'); gr.addColorStop(0.08, 'rgba(255,220,120,0.9)');
+    gr.addColorStop(0.25, 'rgba(255,190,70,0.35)'); gr.addColorStop(0.6, 'rgba(230,160,50,0.08)');
+    gr.addColorStop(1, 'rgba(230,160,50,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    L.glow = ly;
+  }
+  {
+    const ly = layer(256, 256), g = ly.g;
+    const gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+    gr.addColorStop(0, 'rgba(255,215,130,0.55)'); gr.addColorStop(0.3, 'rgba(240,180,80,0.22)');
+    gr.addColorStop(1, 'rgba(200,150,60,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+    L.halo = ly;
+  }
+
+  // ---- vignette ----
+  {
+    const ly = layer(VW, VH), g = ly.g;
+    const gr = g.createRadialGradient(CX, 620, 300, CX, 620, 1250);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.6, 'rgba(2,6,4,0.3)'); gr.addColorStop(1, 'rgba(2,6,4,0.75)');
+    g.fillStyle = gr; g.fillRect(0, 0, VW, VH);
+    L.vig = ly;
+  }
+}
+
+function runePath(g, x, y, s) {
+  // a tall stave with branching tines and an encircling ring — an elder sigil
+  g.beginPath();
+  g.moveTo(x, y - 52 * s); g.lineTo(x, y + 52 * s);
+  g.moveTo(x, y - 30 * s); g.lineTo(x + 18 * s, y - 46 * s);
+  g.moveTo(x, y - 30 * s); g.lineTo(x - 18 * s, y - 46 * s);
+  g.moveTo(x, y + 4 * s); g.lineTo(x + 20 * s, y - 12 * s);
+  g.moveTo(x, y + 4 * s); g.lineTo(x - 20 * s, y + 20 * s);
+  g.moveTo(x - 12 * s, y + 44 * s); g.lineTo(x, y + 30 * s); g.lineTo(x + 12 * s, y + 44 * s);
+  g.moveTo(x + 24 * s, y - 62 * s); g.arc(x, y - 62 * s, 24 * s, 0, Math.PI, true);
+}
+
+// --------------------------------------------------------------------- state
+function newFly(init) {
+  const z = rand();
+  return {
+    x: range(160, VW - 160), y: range(420, 1000), z,
+    ex: 0, ey: 0,
+    sp: range(14, 34) * (0.6 + z * 0.6),
+    f1: range(0.07, 0.2), f2: range(0.21, 0.5), p1: range(0, TAU), p2: range(0, TAU),
+    g1: range(0.06, 0.18), g2: range(0.25, 0.55), q1: range(0, TAU), q2: range(0, TAU),
+    bf: range(0.25, 0.9), bp: range(0, TAU), gathered: 0,
+  };
+}
+function newLeaf(midAir) {
+  const pal = ['#c8902e', '#d9a441', '#9c7a2a', '#b56d2a', '#8a8a34', '#e0b552'];
+  return {
+    x: range(220, VW - 220), y: midAir ? range(120, 900) : range(-30, 160),
+    vy: range(22, 42), sw: range(30, 70), sf: range(0.4, 0.9), sp: range(0, TAU),
+    rot: range(0, TAU), rs: range(-1.6, 1.6), size: range(6, 11), col: pick(pal),
+    flip: range(1.5, 3.5), z: rand(), t: 0,
+  };
+}
+function startRay(prog) {
+  const free = S.rays.filter((r) => !r.on);
+  if (!free.length) return;
+  const r = pick(free);
+  r.on = true; r.dur = range(14, 26); r.t = prog ? r.dur * prog : 0;
+  r.x = range(560, 1360); r.ang = range(0.2, 0.42) * (r.x > CX + 200 ? 0.6 : 1);
+  r.w = range(0.7, 1.5); r.peak = range(0.13, 0.24);
+}
+function startGather() {
+  if (S.gather) return;
+  const gx = range(620, 1300), gy = range(560, 780);
+  const cand = S.flies.slice().sort((a, b) =>
+    Math.hypot(a.x - gx, a.y - gy) - Math.hypot(b.x - gx, b.y - gy)).slice(0, 26);
+  cand.forEach((f, i) => { f.gathered = 1; f.ga = (i / cand.length) * TAU; f.gr = range(30, 90); });
+  S.gather = { x: gx, y: gy, t: 0, dur: range(13, 18), members: cand };
+}
+function startRune() {
+  if (S.rune) return;
+  S.rune = { t: 0, up: range(2, 3.5), hold: range(4, 7), down: range(4, 6) };
+  // a few wisps drift over to the stone
+  S.flies.filter((f) => !f.gathered).sort((a, b) =>
+    Math.abs(a.x - STONE.x) - Math.abs(b.x - STONE.x)).slice(0, 5)
+    .forEach((f) => { f.ex += (STONE.x - f.x) * 0.25; f.ey += (STONE.y - 120 - f.y) * 0.25; });
+}
+
+// ------------------------------------------------------------------- runtime
+LW.start({
+  init() {
+    geoSeed = Math.floor(rand() * 1e9);
+    for (let i = 0; i < 95; i++) S.flies.push(newFly(true));
+    for (let i = 0; i < 7; i++) S.leaves.push(newLeaf(true));
+    for (let i = 0; i < 5; i++) S.rays.push({ on: false });
+    startRay(range(0.3, 0.5)); startRay(range(0.15, 0.35));
+    every(4, 11, () => startRay(0));
+    every(1.2, 4.5, () => { if (S.leaves.length < 16) S.leaves.push(newLeaf(false)); });
+    every(5, 14, () => { // occasional little gust: a small flurry of leaves
+      if (rand() < 0.35) for (let i = 0; i < 4; i++) if (S.leaves.length < 22) S.leaves.push(newLeaf(false));
+    });
+    after(range(18, 45), () => { startGather(); every(55, 120, startGather); });
+    after(range(8, 30), () => { startRune(); every(45, 110, startRune); });
+  },
+  resize() { build(); },
+  update(dt, t) {
+    // rays
+    for (const r of S.rays) if (r.on) { r.t += dt; if (r.t >= r.dur) r.on = false; }
+    // gather event
+    const G = S.gather;
+    if (G) {
+      G.t += dt;
+      const release = G.dur - 3;
+      if (G.t >= release && !G.released) {
+        G.released = true;
+        for (const f of G.members) {
+          const a = f.ga + range(-0.4, 0.4), v = range(90, 200);
+          f.gathered = 0; f.ex = Math.cos(a) * v; f.ey = Math.sin(a) * v * 0.7;
+        }
+      }
+      if (G.t >= G.dur) S.gather = null;
+    }
+    // rune event
+    if (S.rune) { S.rune.t += dt; const R = S.rune; if (R.t > R.up + R.hold + R.down) S.rune = null; }
+    // fireflies
+    const decay = Math.exp(-dt * 0.6);
+    for (const f of S.flies) {
+      let vx = f.sp * (Math.sin(t * f.f1 + f.p1) + 0.6 * Math.sin(t * f.f2 + f.p2));
+      let vy = f.sp * 0.6 * (Math.sin(t * f.g1 + f.q1) + 0.6 * Math.sin(t * f.g2 + f.q2));
+      if (f.gathered && G) {
+        const a = f.ga + t * 0.5 * (f.gr > 60 ? 1 : -1.3);
+        const tx = G.x + Math.cos(a) * f.gr, ty = G.y + Math.sin(a) * f.gr * 0.55;
+        const k = smooth(G.t / 3) * 1.6;
+        vx = vx * (1 - smooth(G.t / 3) * 0.8) + (tx - f.x) * k;
+        vy = vy * (1 - smooth(G.t / 3) * 0.8) + (ty - f.y) * k;
+      } else {
+        // soft bounds
+        if (f.x < 150) vx += (150 - f.x) * 0.5; if (f.x > VW - 150) vx -= (f.x - VW + 150) * 0.5;
+        if (f.y < 380) vy += (380 - f.y) * 0.5; if (f.y > 1010) vy -= (f.y - 1010) * 0.5;
+      }
+      f.x += (vx + f.ex) * dt; f.y += (vy + f.ey) * dt;
+      f.ex *= decay; f.ey *= decay;
+    }
+    // leaves
+    for (let i = S.leaves.length - 1; i >= 0; i--) {
+      const l = S.leaves[i];
+      l.t += dt; l.y += l.vy * dt; l.rot += l.rs * dt;
+      if (l.y > 1100) S.leaves.splice(i, 1);
+    }
+  },
+  draw(ctx, t) {
+    const cam = Math.sin(t * TAU / 140) * 0.7 + Math.sin(t * TAU / 61 + 1.3) * 0.3;
+    const W = VW + M * 2;
+    ctx.drawImage(L.far.c, -M + cam * 6, 0, W, VH);
+
+    // back fog
+    ctx.globalAlpha = 0.9;
+    let fx = -((t * 9) % 2400);
+    ctx.drawImage(L.fogA.c, fx + cam * 8, 620, 2400, 300);
+    ctx.drawImage(L.fogA.c, fx + 2400 + cam * 8, 620, 2400, 300);
+    ctx.globalAlpha = 1;
+
+    ctx.drawImage(L.mid.c, -M + cam * 16, 0, W, VH);
+
+    // rune glow (on the stone, moves with mid layer)
+    const sxo = STONE.x + cam * 16, syo = STONE.y - STONE.h * 0.5;
+    let re = 0;
+    if (S.rune) {
+      const R = S.rune;
+      re = R.t < R.up ? smooth(R.t / R.up) : R.t < R.up + R.hold ? 1 : 1 - smooth((R.t - R.up - R.hold) / R.down);
+      re *= 0.88 + 0.12 * Math.sin(t * 5.3) * Math.sin(t * 3.1);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.07 + 0.93 * re;
+    ctx.drawImage(L.rune.c, sxo - 120, syo - 150, 240, 300);
+    if (re > 0.01) {
+      ctx.globalAlpha = re * 0.9;
+      ctx.drawImage(L.halo.c, sxo - 260, syo - 200, 520, 440);
+      ctx.globalAlpha = re * 0.5;
+      ctx.drawImage(L.halo.c, sxo - 300, STONE.y - 60, 600, 120);
+    }
+
+    // light shafts
+    for (const r of S.rays) {
+      if (!r.on) continue;
+      const p = r.t / r.dur;
+      const a = smooth(p / 0.3) * (1 - smooth((p - 0.65) / 0.35)) * r.peak;
+      if (a <= 0.002) continue;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.translate(r.x + cam * 10, -40);
+      ctx.rotate(-r.ang);
+      ctx.scale(r.w, 1);
+      ctx.drawImage(L.ray.c, -130, 0, 260, 1200);
+      ctx.restore();
+    }
+
+    // gather halo
+    const G = S.gather;
+    if (G) {
+      const ge = smooth(G.t / 4) * (1 - smooth((G.t - (G.dur - 3.5)) / 2.5));
+      if (ge > 0.01) {
+        ctx.globalAlpha = ge * (0.75 + 0.25 * Math.sin(t * 2.2));
+        ctx.drawImage(L.halo.c, G.x - 170, G.y - 150, 340, 300);
+        ctx.globalAlpha = ge * 0.6;
+        ctx.drawImage(L.glow.c, G.x - 40, G.y - 40, 80, 80);
+      }
+    }
+
+    // fireflies, far half
+    const drawFly = (f) => {
+      const b = Math.sin(t * f.bf + f.bp);
+      let br = 0.25 + 0.75 * b * b * b * b;
+      if (f.gathered && G) br = Math.max(br, smooth(G.t / 3) * 0.85);
+      const s = 7 + f.z * 22;
+      ctx.globalAlpha = br * (0.55 + 0.45 * f.z);
+      ctx.drawImage(L.glow.c, f.x + cam * (8 + f.z * 18) - s, f.y - s, s * 2, s * 2);
+    };
+    for (const f of S.flies) if (f.z < 0.55) drawFly(f);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+
+    // front fog
+    fx = -((t * 15 + 900) % 2400);
+    ctx.drawImage(L.fogB.c, fx + cam * 20, 800, 2400, 300);
+    ctx.drawImage(L.fogB.c, fx + 2400 + cam * 20, 800, 2400, 300);
+
+    ctx.drawImage(L.near.c, -M + cam * 30, 0, W, VH);
+
+    // leaves
+    for (const l of S.leaves) {
+      const x = l.x + Math.sin(l.t * l.sf + l.sp) * l.sw + cam * (12 + l.z * 20);
+      const flip = Math.cos(l.t * l.flip);
+      ctx.save();
+      ctx.translate(x, l.y); ctx.rotate(l.rot); ctx.scale(1, 0.35 + 0.65 * Math.abs(flip));
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = l.col;
+      ctx.beginPath();
+      ctx.moveTo(-l.size, 0);
+      ctx.quadraticCurveTo(0, -l.size * 0.6, l.size, 0);
+      ctx.quadraticCurveTo(0, l.size * 0.6, -l.size, 0);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+
+    // fireflies, near half
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of S.flies) if (f.z >= 0.55) drawFly(f);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+
+    // canopy with gentle sway
+    const sx = Math.sin(t * 0.31) * 3 + Math.sin(t * 0.13 + 2) * 2;
+    const sy = Math.sin(t * 0.23 + 1) * 1.5;
+    ctx.drawImage(L.canopy.c, -M + cam * 36 + sx, -6 + sy, W, 760);
+
+    ctx.drawImage(L.vig.c, 0, 0, VW, VH);
+  },
+});
+</script>
+</body>
+</html>

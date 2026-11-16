@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Wallpapers</title>
+<style>
+  :root { --bg: #101114; --card: #1a1c20; --fg: #e6e6e6; --muted: #9aa0a6; --accent: #f2c230; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 28px; }
+  p.lead { margin: 0 0 28px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
+  a.card { display: block; background: var(--card); border-radius: 10px; overflow: hidden; color: inherit; text-decoration: none; border: 1px solid #ffffff10; }
+  a.card:hover { border-color: var(--accent); }
+  a.card img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; }
+  .meta { padding: 12px 14px; }
+  .meta strong { display: block; font-size: 16px; }
+  .meta code { color: var(--muted); font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Live Wallpapers</h1>
+  <p class="lead">Animated HTML scenes for desktop backgrounds and OBS browser sources. Click one to open it full screen. For OBS, add a Browser Source with the scene's URL at 1920×1080.</p>
+  <div class="grid" id="grid"></div>
+</main>
+<script>
+const scenes = [
+  ['helldivers', 'Helldivers', 'A Super Destroyer calls down stratagem beams and hellpods'],
+  ['carbon', 'Carbon', 'Carbon fiber with electric-blue light traces'],
+  ['eldergrove', 'Eldergrove', 'An enchanted forest with gold wisps'],
+  ['synthwave', 'Synthwave', '80s neon sunset'],
+  ['neon-rain', 'Neon Rain', 'A blue cyberpunk city in the rain'],
+];
+const grid = document.getElementById('grid');
+for (const [slug, name, desc] of scenes) {
+  const a = document.createElement('a');
+  a.className = 'card'; a.href = `scenes/${slug}.html`;
+  const img = document.createElement('img');
+  img.src = `previews/${slug}.jpg`; img.alt = ''; img.loading = 'lazy';
+  const meta = document.createElement('div'); meta.className = 'meta';
+  const s = document.createElement('strong'); s.textContent = name;
+  const d = document.createElement('div'); d.textContent = desc;
+  const c = document.createElement('code'); c.textContent = new URL(a.href).href;
+  meta.append(s, d, c); a.append(img, meta); grid.append(a);
+}
+</script>
+</body>
+</html>

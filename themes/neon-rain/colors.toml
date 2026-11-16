@@ -1,0 +1,37 @@
+mode = "dark"
+
+# Neon Rain — rain-soaked night city: deep navy, electric blue and cyan neon, a touch of violet/magenta
+accent = "#29e6ff"
+selection = "#16345e"
+muted = "#4a5f80"
+
+background = "#070d1a"
+dark_background = "#050a14"
+darker_background = "#03060d"
+lighter_background = "#111d33"
+
+foreground = "#cfe6ff"
+dark_foreground = "#6f88aa"
+light_foreground = "#a9c6e8"
+bright_foreground = "#eef7ff"
+
+red = "#ff4a6a"
+yellow = "#f2d27a"
+orange = "#ff9a5c"
+green = "#4fe0b0"
+cyan = "#29e6ff"
+blue = "#3d8bff"
+magenta = "#c56bff"
+brown = "#8a6a5a"
+
+bright_red = "#ff7a92"
+bright_yellow = "#ffe6a3"
+bright_green = "#7ff0c8"
+bright_cyan = "#7ff0ff"
+bright_blue = "#6faaff"
+bright_magenta = "#ff6fd0"
+
+hyprland_active_border = "rgba(29e6ffee) rgba(3d8bffee) 45deg"
+hyprland_inactive_border = "rgba(16345eaa)"
+active_border_color = "#29e6ff"
+active_tab_background = "#3d8bff"

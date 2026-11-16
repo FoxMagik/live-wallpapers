@@ -1,0 +1,45 @@
+#!/bin/bash
+# livewall — run HTML scenes as live desktop backgrounds (Hyprland / Omarchy).
+#   livewall set <scene|file.html>   start a scene (name from scenes/ or a path)
+#   livewall theme <omarchy-theme>   start the scene matching the theme, or turn off
+#   livewall off                     stop and remember "off"
+#   livewall list | status | restart
+#   livewall run                     (used by the systemd service)
+set -euo pipefail
+REPO=$(dirname "$(dirname "$(readlink -f "$0")")")
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/livewall
+STATE=$STATE_DIR/scene
+mkdir -p "$STATE_DIR"
+
+resolve() {
+  if [[ -f $1 ]]; then realpath "$1"
+  elif [[ -f $REPO/scenes/$1.html ]]; then echo "$REPO/scenes/$1.html"
+  else return 1; fi
+}
+
+case ${1:-status} in
+  run)
+    scene=$(cat "$STATE" 2>/dev/null || true)
+    [[ -z $scene || $scene == none || ! -f $scene ]] && exit 0
+    exec /usr/bin/python3 "$REPO/host/livewall.py" "$scene" --fps "${LIVEWALL_FPS:-30}" ;;
+  set)
+    scene=$(resolve "${2:?usage: livewall set <scene|file.html>}") || { echo "livewall: no scene '$2' (try: livewall list)" >&2; exit 1; }
+    echo "$scene" > "$STATE"
+    systemctl --user restart livewall.service ;;
+  theme)
+    if scene=$(resolve "${2:?usage: livewall theme <theme-slug>}" 2>/dev/null) && [[ $scene == "$REPO"/scenes/* ]]; then
+      echo "$scene" > "$STATE"; systemctl --user restart livewall.service
+    else
+      echo none > "$STATE"; systemctl --user stop livewall.service
+    fi ;;
+  off)
+    echo none > "$STATE"; systemctl --user stop livewall.service ;;
+  restart)
+    systemctl --user restart livewall.service ;;
+  list)
+    for f in "$REPO"/scenes/*.html; do n=$(basename "$f" .html); [[ $n == _* ]] || echo "$n"; done ;;
+  status)
+    echo "scene:   $(cat "$STATE" 2>/dev/null || echo none)"
+    echo "service: $(systemctl --user is-active livewall.service || true)" ;;
+  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

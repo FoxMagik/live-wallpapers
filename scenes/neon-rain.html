@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Rain</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+// ============================================================================
+// livewall runtime — copy this block unchanged into every scene.
+//
+// Scene contract:
+//   * Self-contained single file. No network requests, no external assets.
+//   * Draw in a virtual 1920x1080 space; the runtime scales it to "cover".
+//   * Put ALL timing in update(dt) / sim-time timers (after/every). Never use
+//     setTimeout/setInterval for animation — those keep running while paused
+//     and break ?still rendering.
+//   * Use rand() (seeded) instead of Math.random().
+//
+// URL params:  ?fps=30      frame cap (host passes 30; default 60)
+//              ?seed=123    deterministic randomness
+//              ?still=1&t=8 simulate 8s of scene time, draw one frame, stop
+//                           (used to generate theme background stills)
+// Host API:    window.livewall.pause() / resume() / paused
+// ============================================================================
+const LW = (() => {
+  const params = new URLSearchParams(location.search);
+  const VW = 1920, VH = 1080;
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  let seed = (Number(params.get('seed')) || (Date.now() % 2147483647)) >>> 0;
+  function rand() { // mulberry32
+    seed = (seed + 0x6D2B79F5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const range = (a, b) => a + rand() * (b - a);
+  const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+  // sim-time scheduler
+  let simTime = 0;
+  const timers = [];
+  function after(sec, fn) { timers.push({ at: simTime + sec, fn }); }
+  function every(minSec, maxSec, fn) {
+    const go = () => { fn(); after(range(minSec, maxSec), go); };
+    after(range(minSec, maxSec), go);
+  }
+  function runTimers() {
+    for (let i = timers.length - 1; i >= 0; i--) {
+      if (timers[i].at <= simTime) { const t = timers.splice(i, 1)[0]; t.fn(); }
+    }
+  }
+
+  const view = { scale: 1, ox: 0, oy: 0, w: 0, h: 0, dpr: 1 };
+  function resize() {
+    view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    view.w = Math.round(innerWidth * view.dpr);
+    view.h = Math.round(innerHeight * view.dpr);
+    canvas.width = view.w; canvas.height = view.h;
+    view.scale = Math.max(view.w / VW, view.h / VH);
+    view.ox = (view.w - VW * view.scale) / 2;
+    view.oy = (view.h - VH * view.scale) / 2;
+    if (scene.resize) scene.resize(view);
+    drawFrame();
+  }
+
+  let scene = null, paused = false, last = 0, raf = 0;
+  const fps = Math.max(1, Number(params.get('fps')) || 60);
+  const still = params.has('still');
+
+  function step(dt) { simTime += dt; runTimers(); scene.update(dt, simTime); }
+  function drawFrame() {
+    if (!scene) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    scene.draw(ctx, simTime);
+  }
+  function loop(now) {
+    raf = 0;
+    if (paused) return;
+    raf = requestAnimationFrame(loop);
+    if (!last) { last = now; return; }
+    const elapsed = now - last;
+    if (elapsed < 1000 / fps - 2) return;
+    last = now;
+    step(Math.min(elapsed / 1000, 0.1));
+    drawFrame();
+  }
+  function pause() { paused = true; if (raf) cancelAnimationFrame(raf); raf = 0; }
+  function resume() { if (still) return; paused = false; last = 0; if (!raf) raf = requestAnimationFrame(loop); }
+
+  function start(s) {
+    scene = s;
+    if (scene.init) scene.init(view);
+    addEventListener('resize', resize);
+    resize();
+    if (still) {
+      const T = Number(params.get('t')) || 8;
+      while (simTime < T) step(1 / 30);
+      drawFrame();
+      document.title += ' [still]';
+      return;
+    }
+    document.addEventListener('visibilitychange', () => document.hidden ? pause() : resume());
+    resume();
+  }
+
+  window.livewall = { pause, resume, get paused() { return paused; } };
+  return { VW, VH, ctx, rand, range, pick, after, every, start, view,
+           get time() { return simTime; } };
+})();
+// ============================== end runtime =================================
+
+// ---- scene: Neon Rain ---------------------------------------------------------
+// Blue cyberpunk night city in the rain. Static layers (sky, clouds, three
+// skyline depths, wet-street reflection, sign glows) are pre-rendered at the
+// device resolution; per frame we only blit them plus rain, fog, vehicles and a
+// few small lights. Window toggles are painted straight into the near-layer
+// canvas, so they cost nothing afterwards.
+const { VW, VH, rand, range, pick, after, every } = LW;
+const H0 = 880;                       // waterline / street level
+const WATER = VH - H0;
+
+const C = {
+  nearTop: '#040912', nearBot: '#0a1a38', unlitNear: '#0b162c',
+  midTop: '#081631', midBot: '#123063',
+  farTop: '#0f2550', farBot: '#1c4580',
+};
+const NEON = ['#29e6ff', '#3d8bff', '#5ab8ff', '#29e6ff', '#8f6bff', '#3d8bff'];
+const ACCENT = '#ff3fb4';
+
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+}
+function mrng(s) { // local deterministic RNG for decorative detail
+  s >>>= 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0; let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+let rs = 0;                          // pre-render resolution (device px per virtual px)
+function mk(w, h) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.ceil(w * rs)); c.height = Math.max(1, Math.ceil(h * rs));
+  const x = c.getContext('2d'); x.setTransform(rs, 0, 0, rs, 0, 0);
+  return [c, x];
+}
+
+// ---------------------------------------------------------------- layout data
+const L = { far: [], mid: [], near: [], wins: [], signs: [], beacons: [], lamps: [],
+            board: null, strips: [] };
+const R = {};                        // rendered canvases
+const S = {                          // live state
+  drops: [], ripples: [], vehicles: [], fogs: [], lights: [],
+  flash: 0, bolt: null, boardSlide: 0, boardNext: 1, boardMix: 0, boardGlitch: 0,
+};
+
+// glyph strokes on a 3x3 lattice: made-up katakana-ish marks
+function genGlyph(ox, oy, g, lines) {
+  const P = (i, j) => [ox + i * g / 2, oy + j * g / 2];
+  const n = 2 + Math.floor(rand() * 3);
+  for (let k = 0; k < n; k++) {
+    const kind = pick(['h', 'h', 'v', 'd', 'hook', 'tick']);
+    let a, b, c;
+    if (kind === 'h') { const j = Math.floor(rand() * 3); a = P(0, j); b = P(2, j); lines.push([...a, ...b]); }
+    else if (kind === 'v') { const i = Math.floor(rand() * 3); a = P(i, 0); b = P(i, 2); lines.push([...a, ...b]); }
+    else if (kind === 'd') { const f = rand() < 0.5; a = P(f ? 0 : 2, 2); b = P(1, rand() < 0.5 ? 0 : 1); lines.push([...a, ...b]); }
+    else if (kind === 'hook') { a = P(0, 0); b = P(2, 0); c = P(rand() < 0.5 ? 1 : 0.6, 2); lines.push([...a, ...b], [...b, ...c]); }
+    else { a = P(rand() < 0.5 ? 0.5 : 1.5, 0.6); b = P(a[0] < ox + g / 2 ? 1 : 1.8, 1.3); lines.push([...a, ...b]); }
+  }
+}
+
+function genSign(type, scale) {
+  const g = 26 * scale, sh = { type, lines: [], arcs: [], parts: null, w: 0, h: 0 };
+  if (type === 'vbanner') {
+    const n = 3 + Math.floor(rand() * 3), cw = g + 16 * scale;
+    for (let i = 0; i < n; i++) genGlyph(8 * scale, 10 * scale + i * (g + 12 * scale), g, sh.lines);
+    sh.w = cw - 2 * scale; sh.h = n * (g + 12 * scale) + 8 * scale;
+    sh.frame = true;
+  } else if (type === 'hsign') {
+    const n = 3 + Math.floor(rand() * 3);
+    for (let i = 0; i < n; i++) genGlyph(10 * scale + i * (g + 12 * scale), 8 * scale, g, sh.lines);
+    sh.w = n * (g + 12 * scale) + 8 * scale; sh.h = g + 26 * scale;
+    sh.lines.push([10 * scale, sh.h - 6 * scale, sh.w - 10 * scale, sh.h - 6 * scale]);
+  } else if (type === 'ring') {
+    const r = 30 * scale; sh.w = sh.h = r * 2 + 16 * scale;
+    const cx = sh.w / 2, cy = sh.h / 2;
+    sh.arcs.push([cx, cy, r]);
+    if (rand() < 0.5) { // triangle
+      for (let i = 0; i < 3; i++) {
+        const a1 = -Math.PI / 2 + i * 2.094, a2 = a1 + 2.094, rr = r * 0.62;
+        sh.lines.push([cx + Math.cos(a1) * rr, cy + Math.sin(a1) * rr, cx + Math.cos(a2) * rr, cy + Math.sin(a2) * rr]);
+      }
+    } else { sh.arcs.push([cx, cy, r * 0.45]); sh.lines.push([cx - r * 0.9, cy, cx + r * 0.9, cy]); }
+  } else if (type === 'chevron' || type === 'bars') {
+    const n = type === 'chevron' ? 4 : 5; sh.parts = [];
+    if (type === 'chevron') {
+      sh.w = n * 20 * scale + 24 * scale; sh.h = 46 * scale;
+      for (let i = 0; i < n; i++) {
+        const x0 = 12 * scale + i * 20 * scale;
+        sh.parts.push({ lines: [[x0, 8 * scale, x0 + 14 * scale, sh.h / 2], [x0 + 14 * scale, sh.h / 2, x0, sh.h - 8 * scale]], arcs: [] });
+      }
+    } else {
+      sh.w = 70 * scale; sh.h = n * 14 * scale + 12 * scale;
+      for (let i = 0; i < n; i++) {
+        const y = sh.h - 10 * scale - i * 14 * scale, half = (12 + i * 5) * scale;
+        sh.parts.push({ lines: [[sh.w / 2 - half, y, sh.w / 2 + half, y]], arcs: [] });
+      }
+    }
+  }
+  return sh;
+}
+
+function genSkylines() {
+  // far: dense, hazy, overlapping
+  let x = -80;
+  while (x < VW + 80) {
+    const w = range(34, 110);
+    L.far.push({ x, w, h: Math.min(range(120, 380) * range(0.7, 1.2), 470), spire: rand() < 0.12, seed: rand() * 1e9 });
+    x += w * range(0.45, 0.95);
+  }
+  // mid: overlapping, a few baked signs
+  x = -100;
+  while (x < VW + 100) {
+    const w = range(70, 170);
+    const cx = x + w / 2, dip = 1 - 0.25 * Math.exp(-(((cx - 960) / 420) ** 2));
+    L.mid.push({ x, w, h: range(200, 560) * dip, seed: rand() * 1e9, step: rand() < 0.35,
+                 sign: rand() < 0.22 ? { sh: genSign(pick(['vbanner', 'hsign', 'ring']), 0.55), col: pick(NEON) } : null });
+    x += w * range(0.55, 1.0);
+  }
+  // near: side by side, center dip so the deeper city shows through
+  x = -70;
+  while (x < VW + 70) {
+    const w = range(110, 240);
+    const cx = x + w / 2, dip = 1 - 0.45 * Math.exp(-(((cx - 960) / 330) ** 2));
+    const h = (rand() < 0.3 ? range(560, 740) : range(250, 560)) * dip;
+    const b = { x, w, h, seed: rand() * 1e9, roof: pick(['flat', 'setback', 'setback', 'antenna', 'slant', 'tank']),
+                rim: rand() < 0.5 ? 1 : -1, w0: L.wins.length, strip: rand() < 0.18 };
+    b.sb = range(0.14, 0.28) * w; b.sbH = range(30, 80); b.ant = range(40, 110);
+    // windows
+    const pw = range(5, 8), ph = range(8, 11), gx = range(5, 8), gy = range(8, 11);
+    const cols = Math.floor((w - 20) / (pw + gx)), x0 = x + (w - cols * (pw + gx) + gx) / 2;
+    const base = range(0.12, 0.42);
+    for (let y = H0 - h + 16; y < H0 - 34; y += ph + gy) {
+      const rowF = rand() < 0.25 ? range(1.4, 2.2) : rand() < 0.3 ? 0.2 : 1;
+      for (let c = 0; c < cols; c++) {
+        L.wins.push({ x: x0 + c * (pw + gx), y, w: pw, h: ph, lit: rand() < base * rowF, col: winCol() });
+      }
+    }
+    b.w1 = L.wins.length;
+    L.near.push(b);
+    x += w + (rand() < 0.4 ? range(30, 90) : range(0, 16));
+  }
+  // beacons on tall near roofs
+  for (const b of L.near) {
+    if (b.h > 420 && b.x > 120 && b.x + b.w < VW - 120) {
+      const top = H0 - b.h - (b.roof === 'setback' ? b.sbH : 0) - (b.roof === 'antenna' ? b.ant : 0);
+      L.beacons.push({ x: b.x + b.w / 2, y: top - 2, ph: rand() * 6, sp: range(0.6, 1.1), col: rand() < 0.6 ? ACCENT : '#ff4a6a' });
+    }
+  }
+  // neon signs on near buildings
+  const boxes = [];
+  const types = ['vbanner', 'vbanner', 'hsign', 'ring', 'chevron', 'bars', 'vbanner', 'hsign', 'ring', 'vbanner'];
+  let tries = 0;
+  while (L.signs.length < 10 && tries++ < 300) {
+    const b = pick(L.near);
+    if (b.h < 260 || b.x < 90 || b.x + b.w > VW - 90) continue;
+    const type = types[L.signs.length % types.length];
+    const sh = genSign(type, type === 'vbanner' ? range(0.85, 1.1) : range(0.8, 1.05));
+    let sx;
+    if (type === 'vbanner') sx = rand() < 0.5 ? b.x - sh.w * 0.45 : b.x + b.w - sh.w * 0.55;
+    else sx = b.x + range(8, Math.max(9, b.w - sh.w - 8));
+    if (sh.w > b.w - 10 && type !== 'vbanner') continue;
+    const sy = range(H0 - b.h + 40, H0 - sh.h - 70);
+    if (sy < 150 || sx < 125 || sx + sh.w > VW - 125) continue;
+    const box = [sx - 14, sy - 14, sx + sh.w + 14, sy + sh.h + 14];
+    if (boxes.some(o => !(box[2] < o[0] || box[0] > o[2] || box[3] < o[1] || box[1] > o[3]))) continue;
+    boxes.push(box);
+    const col = L.signs.length === 4 ? ACCENT : L.signs.length === 7 ? '#8f6bff' : pick(['#29e6ff', '#3d8bff', '#29e6ff', '#5ab8ff']);
+    L.signs.push({ sh, x: sx, y: sy, col, level: 1, on: true, flick: 0, ft: 0, dead: 0, ph: rand() * 6, buzz: false });
+  }
+  if (L.signs.length) L.signs[Math.floor(rand() * L.signs.length)].buzz = true;
+  // billboard: big screen on a wide near building, away from signs
+  for (const b of L.near.slice().sort(() => rand() - 0.5)) {
+    if (b.w < 170 || b.h < 430 || b.x < 200 || b.x + b.w > VW - 200) continue;
+    const bw = 110, bh = 180, bx = b.x + (b.w - bw) / 2, by = H0 - b.h + 50;
+    const box = [bx - 20, by - 20, bx + bw + 20, by + bh + 20];
+    if (boxes.some(o => !(box[2] < o[0] || box[0] > o[2] || box[3] < o[1] || box[1] > o[3]))) continue;
+    L.board = { x: bx, y: by, w: bw, h: bh };
+    break;
+  }
+  // street lamps along the quay
+  for (let lx = 60; lx < VW; lx += range(110, 150)) L.lamps.push(lx);
+}
+function winCol() {
+  const r = rand();
+  const c = r < 0.5 ? '#9fd8ff' : r < 0.75 ? '#58e1ff' : r < 0.9 ? '#6f9dff' : r < 0.97 ? '#c3a6ff' : '#ff7ad1';
+  return hexA(c, range(0.5, 0.92).toFixed(2));
+}
+
+// ---------------------------------------------------------------- rendering
+function strokeShapes(x, shapes, color, glow) {
+  const p = new Path2D();
+  for (const l of shapes.lines) { p.moveTo(l[0], l[1]); p.lineTo(l[2], l[3]); }
+  for (const a of shapes.arcs) { p.moveTo(a[0] + a[2], a[1]); p.arc(a[0], a[1], a[2], 0, Math.PI * 2); }
+  x.lineCap = 'round'; x.lineJoin = 'round';
+  if (!glow) { x.strokeStyle = color; x.lineWidth = 3; x.stroke(p); return; }
+  x.strokeStyle = color; x.shadowColor = color;
+  x.lineWidth = 4; x.shadowBlur = 26 * rs; x.stroke(p);
+  x.lineWidth = 3; x.shadowBlur = 9 * rs; x.stroke(p);
+  x.shadowBlur = 0; x.strokeStyle = 'rgba(230,250,255,0.92)'; x.lineWidth = 1.3; x.stroke(p);
+}
+const PAD = 60;
+function renderSign(sg) {
+  const sh = sg.sh, w = sh.w + PAD * 2, h = sh.h + PAD * 2;
+  const draw = (shapes, wall) => {
+    const [c, x] = mk(w, h);
+    if (wall) {
+      const r = Math.max(sh.w, sh.h) * 0.75 + 30;
+      x.save(); x.translate(w / 2, h / 2); x.scale(sh.w >= sh.h ? 1 : 0.6, sh.h > sh.w ? 1 : 0.6);
+      const g = x.createRadialGradient(0, 0, 0, 0, 0, r);
+      g.addColorStop(0, hexA(sg.col, 0.26)); g.addColorStop(1, hexA(sg.col, 0));
+      x.fillStyle = g; x.fillRect(-r, -r, r * 2, r * 2); x.restore();
+    }
+    x.translate(PAD, PAD);
+    if (sh.frame && wall) {
+      x.strokeStyle = hexA(sg.col, 0.8); x.shadowColor = sg.col; x.shadowBlur = 14 * rs; x.lineWidth = 1.6;
+      x.strokeRect(1, 1, sh.w - 2, sh.h - 2); x.shadowBlur = 0;
+    }
+    strokeShapes(x, shapes, sg.col, true);
+    return c;
+  };
+  sg.cv = draw(sh, true);
+  sg.partCv = sh.parts ? sh.parts.map(pt => draw(pt, false)) : null;
+}
+function signDimTubes(x, sg, ox, oy) { // unlit tube + backplate, baked into a layer
+  const sh = sg.sh;
+  x.save(); x.translate(sg.x - ox, sg.y - oy);
+  x.fillStyle = 'rgba(3,6,14,0.9)';
+  if (sh.frame || sh.type === 'hsign') x.fillRect(-4, -4, sh.w + 8, sh.h + 8);
+  if (sh.frame) { x.strokeStyle = '#13233d'; x.lineWidth = 1.5; x.strokeRect(1, 1, sh.w - 2, sh.h - 2); }
+  const dim = hexA(sg.col, 0.16);
+  strokeShapes(x, sh, dim, false);
+  if (sh.parts) for (const pt of sh.parts) strokeShapes(x, pt, dim, false);
+  x.restore();
+}
+
+function renderSky() {
+  const [c, x] = mk(VW, H0);
+  const g = x.createLinearGradient(0, 0, 0, H0);
+  g.addColorStop(0, '#010309'); g.addColorStop(0.35, '#040b1d'); g.addColorStop(0.7, '#0a1e45');
+  g.addColorStop(0.9, '#12346a'); g.addColorStop(1, '#1b4c8c');
+  x.fillStyle = g; x.fillRect(0, 0, VW, H0);
+  const glow = (cx, cy, rx, ry, col, a) => {
+    x.save(); x.translate(cx, cy); x.scale(rx / ry, 1);
+    const rg = x.createRadialGradient(0, 0, 0, 0, 0, ry);
+    rg.addColorStop(0, hexA(col, a)); rg.addColorStop(1, hexA(col, 0));
+    x.fillStyle = rg; x.fillRect(-ry, -ry, ry * 2, ry * 2); x.restore();
+  };
+  glow(960, H0, 900, 360, '#2a8cff', 0.28);
+  glow(1380, H0 - 40, 500, 260, '#29e6ff', 0.12);
+  glow(450, H0 - 20, 420, 240, '#7a52ff', 0.10);
+  R.sky = c;
+}
+function renderClouds() {
+  const r = mrng(9001), H = 600;
+  const [c, x] = mk(VW, H);
+  const blob = (cx, cy, rx, ry, col, a) => {
+    for (const dx of [-VW, 0, VW]) {
+      if (cx + dx + rx < 0 || cx + dx - rx > VW) continue;
+      x.save(); x.translate(cx + dx, cy); x.scale(rx / ry, 1);
+      const g = x.createRadialGradient(0, 0, 0, 0, 0, ry);
+      g.addColorStop(0, hexA(col, a)); g.addColorStop(1, hexA(col, 0));
+      x.fillStyle = g; x.fillRect(-ry, -ry, ry * 2, ry * 2); x.restore();
+    }
+  };
+  for (let i = 0; i < 90; i++) {
+    const cy = 30 + r() * (H - 80), depth = cy / H;
+    blob(r() * VW, cy, 160 + r() * 340, 30 + r() * 60, depth > 0.5 ? '#2a5fa8' : '#14294f', 0.12 + r() * 0.2 * (0.4 + depth));
+  }
+  for (let i = 0; i < 30; i++) blob(r() * VW, 360 + r() * 220, 200 + r() * 300, 20 + r() * 30, '#3a86d8', 0.06 + r() * 0.08);
+  for (let i = 0; i < 12; i++) blob(r() * VW, 420 + r() * 160, 150 + r() * 200, 15 + r() * 20, '#7a5cff', 0.03 + r() * 0.04);
+  R.clouds = c; R.cloudH = H;
+}
+function bldGrad(x, top, bot, y0) {
+  const g = x.createLinearGradient(0, y0, 0, H0);
+  g.addColorStop(0, top); g.addColorStop(1, bot); return g;
+}
+function renderFar() {
+  const top = 300, [c, x] = mk(VW, H0 - top); x.translate(0, -top);
+  x.fillStyle = bldGrad(x, C.farTop, C.farBot, 420);
+  for (const b of L.far) {
+    x.fillRect(b.x, H0 - b.h, b.w, b.h);
+    if (b.spire) { x.fillRect(b.x + b.w / 2 - 1, H0 - b.h - 50, 2, 50); }
+  }
+  for (const b of L.far) {
+    const r = mrng(b.seed);
+    for (let y = H0 - b.h + 8; y < H0 - 10; y += 6) for (let xx = b.x + 4; xx < b.x + b.w - 4; xx += 5) {
+      if (r() < 0.10) { x.fillStyle = `rgba(110,180,255,${0.15 + r() * 0.3})`; x.fillRect(xx, y, 2, 2.5); }
+    }
+  }
+  R.far = c; R.farTop = top;
+}
+function renderMid() {
+  const top = 180, [c, x] = mk(VW, H0 - top); x.translate(0, -top);
+  for (const b of L.mid) {
+    x.fillStyle = bldGrad(x, C.midTop, C.midBot, H0 - 560);
+    x.fillRect(b.x, H0 - b.h, b.w, b.h);
+    if (b.step) x.fillRect(b.x + b.w * 0.2, H0 - b.h - 40, b.w * 0.6, 41);
+    x.fillStyle = 'rgba(100,180,255,0.18)'; x.fillRect(b.x, H0 - b.h, b.w, 1);
+    const r = mrng(b.seed), base = 0.08 + r() * 0.25;
+    for (let y = H0 - b.h + 10; y < H0 - 16; y += 11) {
+      const rowF = r() < 0.2 ? 2.2 : 1;
+      for (let xx = b.x + 7; xx < b.x + b.w - 8; xx += 8) {
+        if (r() < base * rowF) { x.fillStyle = `rgba(${r() < 0.8 ? '120,200,255' : '170,150,255'},${0.25 + r() * 0.4})`; x.fillRect(xx, y, 4, 5); }
+      }
+    }
+    if (b.sign) { // baked, no flicker
+      const sg = { sh: b.sign.sh, col: b.sign.col }; renderSign(sg);
+      const sx = b.x + (b.w - sg.sh.w) / 2, sy = H0 - b.h + 30 + r() * Math.max(1, b.h - sg.sh.h - 120);
+      x.globalAlpha = 0.65; x.drawImage(sg.cv, sx - PAD, sy - PAD, sg.sh.w + PAD * 2, sg.sh.h + PAD * 2); x.globalAlpha = 1;
+    }
+  }
+  R.mid = c; R.midTop = top;
+}
+function renderNear() {
+  const top = 40, [c, x] = mk(VW, H0 + 8 - top); x.translate(0, -top);
+  const fill = bldGrad(x, C.nearTop, C.nearBot, 160);
+  for (const b of L.near) {
+    const y0 = H0 - b.h;
+    x.fillStyle = fill;
+    x.fillRect(b.x, y0, b.w, b.h + 2);
+    if (b.roof === 'setback') x.fillRect(b.x + b.sb, y0 - b.sbH, b.w - 2 * b.sb, b.sbH + 1);
+    if (b.roof === 'slant') { x.beginPath(); x.moveTo(b.x, y0 + 1); x.lineTo(b.x + b.w * (b.rim > 0 ? 0.3 : 0.7), y0 - 60); x.lineTo(b.x + b.w, y0 + 1); x.fill(); }
+    if (b.roof === 'tank') { x.fillRect(b.x + b.w * 0.6, y0 - 34, 28, 22); x.fillRect(b.x + b.w * 0.6 + 3, y0 - 12, 2, 12); x.fillRect(b.x + b.w * 0.6 + 23, y0 - 12, 2, 12); }
+    if (b.roof === 'antenna') {
+      x.fillRect(b.x + b.w / 2 - 1.5, y0 - b.ant, 3, b.ant);
+      x.fillRect(b.x + b.w / 2 - 14, y0 - b.ant * 0.55, 28, 2);
+      x.fillRect(b.x + b.w * 0.2, y0 - 26, 2, 26);
+    }
+    // rim light on one side + roof edge
+    const ex = b.rim > 0 ? b.x + b.w - 2 : b.x;
+    const rg = x.createLinearGradient(0, y0, 0, H0);
+    rg.addColorStop(0, 'rgba(90,190,255,0.45)'); rg.addColorStop(1, 'rgba(90,190,255,0.04)');
+    x.fillStyle = rg; x.fillRect(ex, y0, 2, b.h);
+    x.fillStyle = 'rgba(120,210,255,0.28)'; x.fillRect(b.x, y0, b.w, 1.2);
+    // floor band lines
+    x.fillStyle = 'rgba(40,80,140,0.10)';
+    for (let y = y0 + 60; y < H0 - 20; y += 60) x.fillRect(b.x, y, b.w, 1);
+    // windows
+    for (let i = b.w0; i < b.w1; i++) paintWin(x, L.wins[i]);
+    // LED edge strip
+    if (b.strip) {
+      x.save(); x.shadowColor = '#29e6ff'; x.shadowBlur = 10 * rs; x.fillStyle = 'rgba(80,230,255,0.75)';
+      x.fillRect(b.rim > 0 ? b.x + 3 : b.x + b.w - 5, y0 + 6, 2, b.h - 40); x.restore();
+    }
+  }
+  for (const sg of L.signs) signDimTubes(x, sg, 0, 0);
+  if (L.board) { const B = L.board; x.fillStyle = '#02050c'; x.fillRect(B.x - 6, B.y - 6, B.w + 12, B.h + 12);
+    x.fillStyle = '#1a2c48'; x.fillRect(B.x - 6, B.y + B.h + 6, 3, 30); x.fillRect(B.x + B.w + 3, B.y + B.h + 6, 3, 30); }
+  // quay
+  x.fillStyle = '#03070f'; x.fillRect(0, H0 - 10, VW, 18);
+  x.fillStyle = 'rgba(110,200,255,0.35)'; x.fillRect(0, H0 - 10, VW, 1);
+  for (const lx of L.lamps) {
+    x.fillStyle = '#0a1426'; x.fillRect(lx - 1, H0 - 44, 2, 34); x.fillRect(lx - 1, H0 - 44, 8, 2);
+    x.save(); x.shadowColor = '#7fd8ff'; x.shadowBlur = 14 * rs; x.fillStyle = '#d8f4ff';
+    x.fillRect(lx + 4, H0 - 43, 5, 2.5); x.restore();
+  }
+  R.near = c; R.nearTop = top; R.nearCtx = x;
+}
+function paintWin(x, w) {
+  x.fillStyle = C.unlitNear; x.fillRect(w.x, w.y, w.w, w.h);
+  if (w.lit) { x.fillStyle = w.col; x.fillRect(w.x, w.y, w.w, w.h); }
+}
+function renderReflection() {
+  const [c, x] = mk(VW, WATER);
+  const g = x.createLinearGradient(0, 0, 0, WATER);
+  g.addColorStop(0, '#0b2550'); g.addColorStop(1, '#03070f');
+  x.fillStyle = g; x.fillRect(0, 0, VW, WATER);
+  // squashed mirror of the city, smeared vertically
+  const k = 0.3;
+  const layers = [[R.sky, 0, H0, 0.9], [R.far, R.farTop, H0 - R.farTop, 0.55], [R.mid, R.midTop, H0 - R.midTop, 0.6], [R.near, R.nearTop, H0 + 8 - R.nearTop, 0.75]];
+  for (const [cv, top, h, a] of layers) {
+    for (let i = 0; i < 5; i++) {
+      x.save(); x.globalAlpha = a * (i === 0 ? 0.6 : 0.25);
+      // virtual y in source -> reflected y = (H0 - y) * k + smear
+      x.translate(0, i * 4); x.scale(1, -k); x.translate(0, -H0);
+      x.drawImage(cv, 0, top, VW, h);
+      x.restore();
+    }
+  }
+  // darken with depth, ripple gaps
+  const d = x.createLinearGradient(0, 0, 0, WATER);
+  d.addColorStop(0, 'rgba(2,6,16,0.25)'); d.addColorStop(1, 'rgba(2,5,12,0.7)');
+  x.fillStyle = d; x.fillRect(0, 0, VW, WATER);
+  const r = mrng(4242);
+  for (let i = 0; i < 260; i++) {
+    const y = r() * WATER;
+    x.fillStyle = `rgba(1,3,9,${0.25 + r() * 0.35})`; x.fillRect(r() * VW - 100, y, 60 + r() * 400, 1 + r() * 2);
+  }
+  // lamp reflections
+  for (const lx of L.lamps) {
+    const ll = 50 + r() * 70, lg = x.createLinearGradient(0, 0, 0, ll);
+    lg.addColorStop(0, 'rgba(160,225,255,0.22)'); lg.addColorStop(1, 'rgba(160,225,255,0)');
+    x.fillStyle = lg; x.fillRect(lx + 3, 6, 7, ll);
+  }
+  R.refl = c;
+  // ripple overlay (sits over animated sign streaks)
+  const [rc, rx] = mk(VW + 40, WATER);
+  for (let i = 0; i < 200; i++) {
+    rx.fillStyle = `rgba(1,4,10,${0.3 + r() * 0.4})`; rx.fillRect(r() * (VW + 40) - 50, r() * WATER, 40 + r() * 260, 1 + r() * 1.5);
+  }
+  for (let i = 0; i < 60; i++) {
+    rx.fillStyle = `rgba(140,200,255,${0.04 + r() * 0.06})`; rx.fillRect(r() * VW, r() * WATER, 30 + r() * 140, 1);
+  }
+  R.ripple = rc;
+}
+function renderSprites() {
+  const dot = (col) => {
+    const [c, x] = mk(64, 64);
+    const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.12, hexA(col, 0.9));
+    g.addColorStop(0.4, hexA(col, 0.25)); g.addColorStop(1, hexA(col, 0));
+    x.fillStyle = g; x.fillRect(0, 0, 64, 64); return c;
+  };
+  R.dotCyan = dot('#29e6ff'); R.dotMag = dot(ACCENT); R.dotRed = dot('#ff4a6a');
+  R.dotWhite = dot('#cfe8ff'); R.dotBlue = dot('#3d8bff');
+  // headlight cone (points +x)
+  { const [c, x] = mk(200, 40); const g = x.createLinearGradient(0, 0, 200, 0);
+    g.addColorStop(0, 'rgba(170,230,255,0.55)'); g.addColorStop(1, 'rgba(170,230,255,0)');
+    x.fillStyle = g; x.beginPath(); x.moveTo(0, 18); x.lineTo(200, 0); x.lineTo(200, 40); x.lineTo(0, 22); x.fill(); R.cone = c; }
+  // searchlight beam (points +x, centred on y=110)
+  { const [c, x] = mk(1300, 220);
+    for (const [wf, a] of [[1, 0.05], [0.7, 0.06], [0.45, 0.08], [0.22, 0.1]]) {
+      const g = x.createLinearGradient(0, 0, 1300, 0);
+      g.addColorStop(0, `rgba(150,205,255,${a * 2})`); g.addColorStop(0.5, `rgba(150,205,255,${a})`); g.addColorStop(1, 'rgba(150,205,255,0)');
+      x.fillStyle = g; x.beginPath(); x.moveTo(0, 110 - 6 * wf); x.lineTo(1300, 110 - 110 * wf); x.lineTo(1300, 110 + 110 * wf); x.lineTo(0, 110 + 6 * wf); x.fill();
+    }
+    R.beam = c; }
+  // fog puff
+  { const [c, x] = mk(1400, 240); const r = mrng(77);
+    for (let i = 0; i < 26; i++) {
+      const cx = 200 + r() * 1000, cy = 90 + r() * 70, ry = 40 + r() * 60, rx = ry * (2 + r() * 3);
+      x.save(); x.translate(cx, cy); x.scale(rx / ry, 1);
+      const g = x.createRadialGradient(0, 0, 0, 0, 0, ry);
+      g.addColorStop(0, 'rgba(90,150,225,0.20)'); g.addColorStop(1, 'rgba(90,150,225,0)');
+      x.fillStyle = g; x.fillRect(-ry, -ry, ry * 2, ry * 2); x.restore();
+    }
+    R.fog = c; }
+  // sky flash blob
+  { const [c, x] = mk(400, 400); const g = x.createRadialGradient(200, 200, 0, 200, 200, 200);
+    g.addColorStop(0, 'rgba(170,200,255,0.55)'); g.addColorStop(0.5, 'rgba(110,150,255,0.18)'); g.addColorStop(1, 'rgba(90,120,255,0)');
+    x.fillStyle = g; x.fillRect(0, 0, 400, 400); R.flashBlob = c; }
+  // vignette + status-bar shade
+  { const [c, x] = mk(VW, VH);
+    const g = x.createRadialGradient(VW / 2, VH * 0.55, VH * 0.45, VW / 2, VH * 0.55, VW * 0.75);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,2,8,0.6)');
+    x.fillStyle = g; x.fillRect(0, 0, VW, VH);
+    const t = x.createLinearGradient(0, 0, 0, 110);
+    t.addColorStop(0, 'rgba(0,1,5,0.55)'); t.addColorStop(1, 'rgba(0,1,5,0)');
+    x.fillStyle = t; x.fillRect(0, 0, VW, 110);
+    R.vig = c; }
+}
+// billboard slides: abstract marks only
+function renderBoard() {
+  if (!L.board) return;
+  const B = L.board, r = mrng(31337);
+  R.slides = [0, 1, 2, 3].map(k => {
+    const [c, x] = mk(B.w, B.h);
+    const bg = x.createLinearGradient(0, 0, 0, B.h);
+    const pal = [['#06264d', '#0b5fa8', '#29e6ff'], ['#140a3a', '#4b2aa8', '#b49cff'], ['#03203a', '#0b7fa0', '#7ff0ff'], ['#0a1240', '#2048c0', ACCENT]][k];
+    bg.addColorStop(0, pal[0]); bg.addColorStop(1, pal[1]); x.fillStyle = bg; x.fillRect(0, 0, B.w, B.h);
+    x.strokeStyle = pal[2]; x.fillStyle = pal[2]; x.lineWidth = 3; x.lineCap = 'round';
+    const cx = B.w / 2;
+    if (k === 0) { for (let i = 1; i <= 4; i++) { x.globalAlpha = 1 - i * 0.18; x.beginPath(); x.arc(cx, 70, i * 11, 0, Math.PI * 2); x.stroke(); } }
+    else if (k === 1) { x.beginPath(); x.moveTo(cx, 30); x.lineTo(cx + 34, 100); x.lineTo(cx - 34, 100); x.closePath(); x.stroke();
+      x.globalAlpha = 0.6; x.fillRect(cx - 4, 55, 8, 30); }
+    else if (k === 2) { const lines = []; genGlyphLocal(r, cx - 28, 26, 56, lines); x.beginPath(); for (const l of lines) { x.moveTo(l[0], l[1]); x.lineTo(l[2], l[3]); } x.lineWidth = 5; x.stroke(); }
+    else { for (let i = 0; i < 6; i++) { x.globalAlpha = 0.4 + i * 0.1; x.fillRect(20, 30 + i * 14, 20 + r() * 50, 7); } }
+    x.globalAlpha = 0.85;
+    for (let i = 0; i < 3; i++) x.fillRect(16, 136 + i * 11, 30 + r() * 48, 4);
+    x.globalAlpha = 0.12; x.fillStyle = '#000';
+    for (let y = 0; y < B.h; y += 3) x.fillRect(0, y, B.w, 1);
+    x.globalAlpha = 1;
+    return c;
+  });
+  const [gc, gx] = mk(B.w + 160, B.h + 160);
+  const g = gx.createRadialGradient(gc.width / rs / 2, gc.height / rs / 2, 20, gc.width / rs / 2, gc.height / rs / 2, 150);
+  g.addColorStop(0, 'rgba(60,150,255,0.35)'); g.addColorStop(1, 'rgba(60,150,255,0)');
+  gx.fillStyle = g; gx.fillRect(0, 0, B.w + 160, B.h + 160); R.boardGlow = gc;
+}
+function genGlyphLocal(r, ox, oy, g, lines) {
+  const P = (i, j) => [ox + i * g / 2, oy + j * g / 2];
+  lines.push([...P(0, 0), ...P(2, 0)], [...P(2, 0), ...P(1, 2)], [...P(0.3, 1), ...P(1.4, 1)]);
+  if (r() < 0.5) lines.push([...P(1, 0), ...P(1, 1)]);
+}
+
+function renderAll() {
+  renderSky(); renderClouds(); renderFar(); renderMid(); renderNear();
+  for (const sg of L.signs) renderSign(sg);
+  renderReflection(); renderSprites(); renderBoard();
+  if (S.bolt) renderBolt(S.bolt);
+}
+
+// ---------------------------------------------------------------- events
+function spawnVehicle(initial) {
+  const s = range(0.35, 1.35), dir = rand() < 0.5 ? 1 : -1;
+  const y = 120 + (1.35 - s) * 260 + range(-30, 90) + (s > 1 ? 120 : 0);
+  const v = { s, dir, y: Math.max(110, y), speed: range(70, 150) * (0.5 + s), bf: range(0.6, 1.2), ph: rand() * 6,
+              x: dir > 0 ? -150 : VW + 150, tail: rand() < 0.3 ? ACCENT : '#ff4a6a' };
+  if (initial) v.x = range(300, VW - 300);
+  S.vehicles.push(v);
+  return v;
+}
+function lightning() {
+  const x0 = range(250, VW - 250);
+  const pts = [[x0, range(40, 90)]];
+  let x = x0, y = pts[0][1];
+  const yEnd = range(330, 520);
+  while (y < yEnd) { y += range(18, 42); x += range(-28, 28); pts.push([x, y]); }
+  const branch = [];
+  const bi = 2 + Math.floor(rand() * (pts.length - 3));
+  let bx = pts[bi][0], by = pts[bi][1];
+  branch.push([bx, by]);
+  for (let i = 0; i < 4; i++) { bx += range(10, 40) * (rand() < 0.5 ? -1 : 1); by += range(15, 35); branch.push([bx, by]); }
+  S.bolt = { pts, branch, x0 };
+  renderBolt(S.bolt);
+  const pulses = 1 + Math.floor(rand() * 3);
+  let d = 0;
+  for (let i = 0; i < pulses; i++) { after(d, () => { S.flash = Math.max(S.flash, range(0.7, 1)); }); d += range(0.08, 0.3); }
+}
+function renderBolt(b) {
+  const xs = b.pts.map(p => p[0]).concat(b.branch.map(p => p[0])), ys = b.pts.map(p => p[1]).concat(b.branch.map(p => p[1]));
+  const minx = Math.min(...xs) - 30, miny = Math.min(...ys) - 30, maxx = Math.max(...xs) + 30, maxy = Math.max(...ys) + 30;
+  const [c, x] = mk(maxx - minx, maxy - miny); x.translate(-minx, -miny);
+  const line = (pts, wdt) => { x.beginPath(); x.moveTo(pts[0][0], pts[0][1]); for (const p of pts) x.lineTo(p[0], p[1]);
+    x.lineWidth = wdt; x.strokeStyle = '#9cc8ff'; x.shadowColor = '#6fa8ff'; x.shadowBlur = 18 * rs; x.stroke();
+    x.shadowBlur = 0; x.lineWidth = wdt * 0.4; x.strokeStyle = '#f0f8ff'; x.stroke(); };
+  x.lineJoin = 'round'; line(b.pts, 2.4); line(b.branch, 1.4);
+  b.cv = c; b.bx = minx; b.by = miny; b.bw = maxx - minx; b.bh = maxy - miny;
+}
+function searchlight() {
+  if (S.lights.length >= 2) return;
+  const ox = range(300, VW - 300);
+  S.lights.push({ ox, oy: H0 - range(90, 140), a0: range(-0.6, 0.6), sp: range(0.04, 0.09) * (rand() < 0.5 ? -1 : 1),
+                  amp: range(0.2, 0.45), age: 0, life: range(14, 30), ph: rand() * 6 });
+}
+
+// ---------------------------------------------------------------- scene
+LW.start({
+  init() {
+    genSkylines();
+    for (let i = 0; i < 260; i++) {
+      const near = i >= 170;
+      S.drops.push({ x: range(-200, VW), y: range(-50, VH), near,
+                     len: near ? range(26, 42) : range(13, 22), sp: near ? range(1350, 1650) : range(850, 1100) });
+    }
+    const fogDefs = [[640, 0.55, 9], [770, 0.8, -6], [800, 0.7, 12], [840, 1, -14], [700, 0.6, 7], [860, 0.9, 16]];
+    S.fogs = fogDefs.map(([y, a, sp], i) => ({ y, a, sp, x: range(-1400, VW), slot: i < 2 ? 0 : i < 4 ? 1 : 2 }));
+    spawnVehicle(true); if (rand() < 0.7) spawnVehicle(true);
+    every(5, 15, () => {
+      spawnVehicle(false);
+      if (rand() < 0.3) { const n = 1 + Math.floor(rand() * 2); for (let i = 1; i <= n; i++) after(i * range(0.5, 1.1), () => spawnVehicle(false)); }
+    });
+    // windows: a few flip at random times
+    every(0.12, 0.7, () => {
+      const w = pick(L.wins);
+      w.lit = !w.lit; if (w.lit) w.col = winCol();
+      if (R.nearCtx) paintWin(R.nearCtx, w);
+    });
+    every(3, 14, () => { const s = pick(L.signs); if (s && s.dead <= 0) { s.flick = range(0.2, 1.1); } });
+    every(25, 70, () => { const s = pick(L.signs); if (s) s.dead = range(2, 9); });
+    every(1.2, 4, () => { for (const s of L.signs) if (s.buzz && s.dead <= 0) s.flick = Math.max(s.flick, range(0.05, 0.3)); });
+    every(40, 120, lightning);
+    every(18, 55, searchlight);
+    if (rand() < 0.55) { searchlight(); S.lights[0].age = 3; }
+    every(4, 11, () => { S.boardNext = (S.boardSlide + 1 + Math.floor(rand() * 3)) % 4; S.boardMix = 0.0001; });
+    every(6, 20, () => { S.boardGlitch = range(0.15, 0.4); });
+  },
+  resize(view) {
+    const want = Math.min(2, Math.max(0.5, Math.round(view.scale * 4) / 4));
+    if (want === rs) return;
+    rs = want; renderAll();
+  },
+  update(dt, t) {
+    // rain
+    for (const d of S.drops) {
+      d.y += d.sp * dt; d.x += d.sp * 0.2 * dt;
+      if (d.y - d.len > VH) { d.y = range(-80, -10); d.x = range(-250, VW); }
+    }
+    // puddle ripples
+    let n = Math.floor(dt * 30 + rand());
+    while (n-- > 0) {
+      const y = H0 + 8 + Math.pow(rand(), 0.8) * (WATER - 8);
+      S.ripples.push({ x: range(80, VW - 80), y, r: 0, rm: 3 + (y - H0) / WATER * 16, life: 0 });
+    }
+    for (let i = S.ripples.length - 1; i >= 0; i--) {
+      const p = S.ripples[i]; p.life += dt * 1.8;
+      if (p.life >= 1) S.ripples.splice(i, 1);
+    }
+    // fog
+    for (const f of S.fogs) { f.x += f.sp * dt; if (f.x > VW + 50) f.x = -1450; if (f.x < -1450) f.x = VW + 50; }
+    // vehicles
+    for (let i = S.vehicles.length - 1; i >= 0; i--) {
+      const v = S.vehicles[i]; v.x += v.dir * v.speed * dt;
+      if (v.x < -300 || v.x > VW + 300) S.vehicles.splice(i, 1);
+    }
+    // signs
+    for (const s of L.signs) {
+      if (s.dead > 0) { s.dead -= dt; s.level = 0.0; if (s.dead <= 0) s.flick = range(0.4, 1.2); continue; }
+      if (s.flick > 0) {
+        s.flick -= dt; s.ft -= dt;
+        if (s.ft <= 0) { s.on = !s.on; s.ft = range(0.02, 0.11); }
+        s.level = s.on ? range(0.75, 1) : range(0, 0.2);
+        if (s.flick <= 0) s.on = true;
+      } else s.level = 0.93 + 0.07 * Math.sin(t * 9 + s.ph);
+    }
+    // searchlights
+    for (let i = S.lights.length - 1; i >= 0; i--) { const l = S.lights[i]; l.age += dt; if (l.age > l.life) S.lights.splice(i, 1); }
+    S.flash = Math.max(0, S.flash - dt * 5);
+    if (S.bolt && S.flash <= 0 && t > 0) { /* keep geometry until next */ }
+    if (S.boardMix > 0) { S.boardMix += dt * 1.5; if (S.boardMix >= 1) { S.boardSlide = S.boardNext; S.boardMix = 0; } }
+    S.boardGlitch = Math.max(0, S.boardGlitch - dt);
+  },
+  draw(ctx, t) {
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    // water area base is painted by reflection; sky above
+    ctx.drawImage(R.sky, 0, 0, VW, H0);
+    // clouds, drifting and wrapping
+    const cx = (t * 5) % VW;
+    ctx.globalAlpha = 0.95;
+    ctx.drawImage(R.clouds, cx, 0, VW, R.cloudH); ctx.drawImage(R.clouds, cx - VW, 0, VW, R.cloudH);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'lighter';
+    // lightning
+    if (S.flash > 0.01 && S.bolt) {
+      const b = S.bolt;
+      ctx.globalAlpha = S.flash; ctx.drawImage(R.flashBlob, b.x0 - 500, -350, 1000, 1000);
+      ctx.globalAlpha = Math.min(1, S.flash * 1.4); ctx.drawImage(b.cv, b.bx, b.by, b.bw, b.bh);
+    }
+    // searchlights from behind the skyline
+    for (const l of S.lights) {
+      const fade = Math.min(1, l.age / 2.5, (l.life - l.age) / 2.5);
+      const a = l.a0 + Math.sin(l.age * l.sp * 6.283 + l.ph) * l.amp;
+      ctx.save(); ctx.translate(l.ox, l.oy); ctx.rotate(-Math.PI / 2 + a);
+      ctx.globalAlpha = 0.8 * Math.max(0, fade); ctx.drawImage(R.beam, 0, -110, 1300, 220);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    // far skyline + fog
+    ctx.drawImage(R.far, 0, R.farTop, VW, H0 - R.farTop);
+    drawFogs(ctx, 0);
+    drawVehicles(ctx, t, 0, 0.62);
+    // mid skyline
+    ctx.drawImage(R.mid, 0, R.midTop, VW, H0 - R.midTop);
+    drawFogs(ctx, 1);
+    drawVehicles(ctx, t, 0.62, 1.0);
+    // near skyline
+    ctx.drawImage(R.near, 0, R.nearTop, VW, H0 + 8 - R.nearTop);
+    drawBoard(ctx, t);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const s of L.signs) drawSign(ctx, s, t, false);
+    for (const b of L.beacons) {
+      const k = Math.max(0, Math.sin(t * b.sp * 3 + b.ph)); if (k < 0.05) continue;
+      ctx.globalAlpha = k * 0.9; ctx.drawImage(b.col === ACCENT ? R.dotMag : R.dotRed, b.x - 9, b.y - 9, 18, 18);
+    }
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    drawVehicles(ctx, t, 1.0, 9);
+    // water / wet street
+    for (let i = 0; i < 25; i++) {
+      const sy = i * 8, off = Math.sin(t * 1.3 + i * 0.75) * (1 + i * 0.18);
+      ctx.drawImage(R.refl, 0, sy * rs, R.refl.width, 8 * rs, -10 + off, H0 + sy, VW + 20, 8.4);
+    }
+    ctx.save(); ctx.beginPath(); ctx.rect(0, H0 + 6, VW, WATER); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const s of L.signs) drawSign(ctx, s, t, true);
+    if (S.flash > 0.01) { ctx.globalAlpha = S.flash * 0.25; ctx.fillStyle = '#3a5aa0'; ctx.fillRect(0, H0, VW, WATER); }
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    const ro = Math.sin(t * 0.7) * 14;
+    ctx.drawImage(R.ripple, -20 + ro, H0, VW + 40, WATER);
+    ctx.restore();
+    // ripples from raindrops
+    ctx.strokeStyle = 'rgba(150,210,255,0.5)'; ctx.lineWidth = 1;
+    for (const p of S.ripples) {
+      const r = p.rm * p.life;
+      ctx.globalAlpha = (1 - p.life) * 0.55;
+      ctx.beginPath(); ctx.ellipse(p.x, p.y, r, r * 0.22, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    drawFogs(ctx, 2);
+    // rain
+    ctx.lineCap = 'butt';
+    for (const near of [false, true]) {
+      ctx.beginPath();
+      for (const d of S.drops) if (d.near === near) { ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - d.len * 0.2, d.y - d.len); }
+      ctx.strokeStyle = near ? 'rgba(170,215,255,0.30)' : 'rgba(140,190,255,0.16)';
+      ctx.lineWidth = near ? 1.4 : 1; ctx.stroke();
+    }
+    // lightning lights everything a touch
+    if (S.flash > 0.01) {
+      ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = S.flash * 0.08;
+      ctx.fillStyle = '#6f8fd0'; ctx.fillRect(0, 0, VW, VH);
+      ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    }
+    ctx.drawImage(R.vig, 0, 0, VW, VH);
+  },
+});
+
+function drawFogs(ctx, slot) {
+  for (const f of S.fogs) if (f.slot === slot) {
+    ctx.globalAlpha = f.a; ctx.drawImage(R.fog, f.x, f.y - 140, 1400, 240);
+  }
+  ctx.globalAlpha = 1;
+}
+function drawSign(ctx, s, t, refl) {
+  if (s.level <= 0.01) return;
+  const sh = s.sh, w = sh.w + PAD * 2, h = sh.h + PAD * 2, x = s.x - PAD;
+  if (!refl) {
+    ctx.globalAlpha = s.level;
+    ctx.drawImage(s.cv, x, s.y - PAD, w, h);
+    if (s.partCv) {
+      const n = s.partCv.length, idx = Math.floor(t * (sh.type === 'chevron' ? 4 : 2.5)) % (n + 2);
+      for (let i = 0; i < n; i++) {
+        const on = sh.type === 'chevron' ? (i === idx || i === idx - 1) : i <= idx;
+        ctx.globalAlpha = s.level * (on ? 1 : 0.12);
+        ctx.drawImage(s.partCv[i], x, s.y - PAD, w, h);
+      }
+    }
+  } else {
+    // squashed, stretched streak on the wet street
+    const cy = s.y + sh.h / 2, ry = H0 + (H0 - cy) * 0.3;
+    const rh = Math.max(h * 0.9, 120);
+    ctx.save(); ctx.translate(x + Math.sin(t * 2 + s.ph) * 2, ry); ctx.scale(1, -1);
+    ctx.globalAlpha = s.level * 0.2; ctx.drawImage(s.cv, 0, -rh / 2, w, rh);
+    ctx.globalAlpha = s.level * 0.14; ctx.drawImage(s.cv, 0, -rh * 0.95, w, rh * 1.9);
+    ctx.restore();
+  }
+}
+function drawVehicles(ctx, t, smin, smax) {
+  for (const v of S.vehicles) {
+    if (v.s < smin || v.s >= smax) continue;
+    const y = v.y + Math.sin(t * v.bf + v.ph) * 3 * v.s;
+    ctx.save(); ctx.translate(v.x, y); ctx.scale(v.dir * v.s, v.s);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.6; ctx.drawImage(R.cone, 22, -20, 200, 40);
+    ctx.globalAlpha = 0.7; ctx.drawImage(R.dotCyan, -26, -4, 52, 22);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    ctx.fillStyle = '#081124';
+    ctx.beginPath();
+    ctx.moveTo(-26, 2); ctx.lineTo(-22, -4); ctx.lineTo(-8, -5); ctx.lineTo(-2, -11); ctx.lineTo(12, -11);
+    ctx.lineTo(20, -4); ctx.lineTo(26, -2); ctx.lineTo(24, 4); ctx.lineTo(-24, 5); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(120,200,255,0.55)'; ctx.fillRect(0, -9, 10, 3);
+    ctx.fillStyle = 'rgba(80,190,255,0.6)'; ctx.fillRect(-22, 3, 44, 1);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.drawImage(R.dotWhite, 16, -10, 18, 18);
+    ctx.drawImage(v.tail === ACCENT ? R.dotMag : R.dotRed, -34, -9, 16, 16);
+    if (Math.sin(t * 5 + v.ph) > 0.85) ctx.drawImage(R.dotWhite, -8, -24, 22, 22);
+    ctx.restore();
+  }
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+}
+function drawBoard(ctx, t) {
+  if (!L.board || !R.slides) return;
+  const B = L.board;
+  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.6 + 0.1 * Math.sin(t * 3);
+  ctx.drawImage(R.boardGlow, B.x - 80, B.y - 80, B.w + 160, B.h + 160);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 0.92;
+  const cur = R.slides[S.boardSlide];
+  if (S.boardGlitch > 0) {
+    for (let i = 0; i < 6; i++) {
+      const sy = i * B.h / 6, off = ((i * 37 + Math.floor(t * 20)) % 7 - 3) * 3;
+      ctx.drawImage(cur, 0, sy * rs, cur.width, B.h / 6 * rs, B.x + off, B.y + sy, B.w, B.h / 6);
+    }
+  } else ctx.drawImage(cur, B.x, B.y, B.w, B.h);
+  if (S.boardMix > 0) { ctx.globalAlpha = 0.92 * S.boardMix; ctx.drawImage(R.slides[S.boardNext], B.x, B.y, B.w, B.h); }
+  // moving scan band
+  const sy = B.y + ((t * 40) % (B.h + 20)) - 10;
+  if (sy < B.y + B.h - 1) { ctx.globalAlpha = 0.12; ctx.fillStyle = '#bfe6ff'; ctx.fillRect(B.x, Math.max(B.y, sy), B.w, Math.min(6, B.y + B.h - sy)); }
+  ctx.globalAlpha = 1;
+}
+</script>
+</body>
+</html>

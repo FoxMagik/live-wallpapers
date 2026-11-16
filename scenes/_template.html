@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scene Template</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+// ============================================================================
+// livewall runtime — copy this block unchanged into every scene.
+//
+// Scene contract:
+//   * Self-contained single file. No network requests, no external assets.
+//   * Draw in a virtual 1920x1080 space; the runtime scales it to "cover".
+//   * Put ALL timing in update(dt) / sim-time timers (after/every). Never use
+//     setTimeout/setInterval for animation — those keep running while paused
+//     and break ?still rendering.
+//   * Use rand() (seeded) instead of Math.random().
+//
+// URL params:  ?fps=30      frame cap (host passes 30; default 60)
+//              ?seed=123    deterministic randomness
+//              ?still=1&t=8 simulate 8s of scene time, draw one frame, stop
+//                           (used to generate theme background stills)
+// Host API:    window.livewall.pause() / resume() / paused
+// ============================================================================
+const LW = (() => {
+  const params = new URLSearchParams(location.search);
+  const VW = 1920, VH = 1080;
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  let seed = (Number(params.get('seed')) || (Date.now() % 2147483647)) >>> 0;
+  function rand() { // mulberry32
+    seed = (seed + 0x6D2B79F5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const range = (a, b) => a + rand() * (b - a);
+  const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+  // sim-time scheduler
+  let simTime = 0;
+  const timers = [];
+  function after(sec, fn) { timers.push({ at: simTime + sec, fn }); }
+  function every(minSec, maxSec, fn) {
+    const go = () => { fn(); after(range(minSec, maxSec), go); };
+    after(range(minSec, maxSec), go);
+  }
+  function runTimers() {
+    for (let i = timers.length - 1; i >= 0; i--) {
+      if (timers[i].at <= simTime) { const t = timers.splice(i, 1)[0]; t.fn(); }
+    }
+  }
+
+  const view = { scale: 1, ox: 0, oy: 0, w: 0, h: 0, dpr: 1 };
+  function resize() {
+    view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    view.w = Math.round(innerWidth * view.dpr);
+    view.h = Math.round(innerHeight * view.dpr);
+    canvas.width = view.w; canvas.height = view.h;
+    view.scale = Math.max(view.w / VW, view.h / VH);
+    view.ox = (view.w - VW * view.scale) / 2;
+    view.oy = (view.h - VH * view.scale) / 2;
+    if (scene.resize) scene.resize(view);
+    drawFrame();
+  }
+
+  let scene = null, paused = false, last = 0, raf = 0;
+  const fps = Math.max(1, Number(params.get('fps')) || 60);
+  const still = params.has('still');
+
+  function step(dt) { simTime += dt; runTimers(); scene.update(dt, simTime); }
+  function drawFrame() {
+    if (!scene) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    scene.draw(ctx, simTime);
+  }
+  function loop(now) {
+    raf = 0;
+    if (paused) return;
+    raf = requestAnimationFrame(loop);
+    if (!last) { last = now; return; }
+    const elapsed = now - last;
+    if (elapsed < 1000 / fps - 2) return;
+    last = now;
+    step(Math.min(elapsed / 1000, 0.1));
+    drawFrame();
+  }
+  function pause() { paused = true; if (raf) cancelAnimationFrame(raf); raf = 0; }
+  function resume() { if (still) return; paused = false; last = 0; if (!raf) raf = requestAnimationFrame(loop); }
+
+  function start(s) {
+    scene = s;
+    if (scene.init) scene.init(view);
+    addEventListener('resize', resize);
+    resize();
+    if (still) {
+      const T = Number(params.get('t')) || 8;
+      while (simTime < T) step(1 / 30);
+      drawFrame();
+      document.title += ' [still]';
+      return;
+    }
+    document.addEventListener('visibilitychange', () => document.hidden ? pause() : resume());
+    resume();
+  }
+
+  window.livewall = { pause, resume, get paused() { return paused; } };
+  return { VW, VH, ctx, rand, range, pick, after, every, start, view,
+           get time() { return simTime; } };
+})();
+// ============================== end runtime =================================
+
+// ---- scene ------------------------------------------------------------------
+// Pre-render static layers to offscreen canvases in init()/resize(); keep per-
+// frame work to drawImage + a few gradients. Avoid ctx.filter and shadowBlur in
+// the per-frame path (expensive in WebKit at 1080p).
+const { VW, VH, rand, range, pick, after, every } = LW;
+const state = { pulse: 0 };
+
+LW.start({
+  init() {
+    every(2, 5, () => { state.pulse = 1; });       // random-timed event
+  },
+  update(dt, t) {
+    state.pulse = Math.max(0, state.pulse - dt);
+  },
+  draw(ctx, t) {
+    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, VW, VH);
+    ctx.fillStyle = `rgba(242,194,48,${0.2 + 0.8 * state.pulse})`;
+    ctx.beginPath(); ctx.arc(VW / 2, VH / 2, 80, 0, Math.PI * 2); ctx.fill();
+  },
+});
+</script>
+</body>
+</html>

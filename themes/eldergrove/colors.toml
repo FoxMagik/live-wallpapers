@@ -1,0 +1,37 @@
+mode = "dark"
+
+# Eldergrove — mossy forest dusk, warm firefly gold, ancient rune amber
+accent = "#d9a441"
+selection = "#2e3f2c"
+muted = "#5d6b55"
+
+background = "#0f1a14"
+dark_background = "#0b140f"
+darker_background = "#070d0a"
+lighter_background = "#1c2b21"
+
+foreground = "#e3dbbb"
+dark_foreground = "#8a8f72"
+light_foreground = "#cbc4a2"
+bright_foreground = "#f7f0d4"
+
+red = "#d2664c"
+yellow = "#e2b858"
+orange = "#d98a3d"
+green = "#8fb35c"
+cyan = "#6db5a0"
+blue = "#73a0c4"
+magenta = "#b78ab2"
+brown = "#8a6a3a"
+
+bright_red = "#e8876d"
+bright_yellow = "#f2d27e"
+bright_green = "#aed17a"
+bright_cyan = "#8fd1bd"
+bright_blue = "#97bddb"
+bright_magenta = "#d2a8cc"
+
+hyprland_active_border = "rgba(d9a441ee) rgba(8fb35cee) 45deg"
+hyprland_inactive_border = "rgba(2e3f2caa)"
+active_border_color = "#d9a441"
+active_tab_background = "#2e3f2c"

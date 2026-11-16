@@ -1,0 +1,37 @@
+mode = "dark"
+
+# Helldivers — Super Earth yellow on black, Terminid orange, Automaton red, Illuminate violet
+accent = "#f2c230"
+selection = "#3a3526"
+muted = "#615c4e"
+
+background = "#141414"
+dark_background = "#0f0f0f"
+darker_background = "#090909"
+lighter_background = "#22211d"
+
+foreground = "#e4dfcf"
+dark_foreground = "#857f6e"
+light_foreground = "#c9c3b1"
+bright_foreground = "#f7f3e6"
+
+red = "#e0443a"
+yellow = "#f2c230"
+orange = "#e8822a"
+green = "#8faa4c"
+cyan = "#4fb3c8"
+blue = "#5a8fd6"
+magenta = "#a77be0"
+brown = "#7d6440"
+
+bright_red = "#f2685e"
+bright_yellow = "#ffdc5e"
+bright_green = "#adc76a"
+bright_cyan = "#79cfe0"
+bright_blue = "#80abe8"
+bright_magenta = "#c39cf0"
+
+hyprland_active_border = "rgba(f2c230ee) rgba(e8822aee) 45deg"
+hyprland_inactive_border = "rgba(3a3526aa)"
+active_border_color = "#f2c230"
+active_tab_background = "#e0443a"

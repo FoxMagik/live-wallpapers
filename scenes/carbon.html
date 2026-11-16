@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carbon</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+// ============================================================================
+// livewall runtime — copy this block unchanged into every scene.
+//
+// Scene contract:
+//   * Self-contained single file. No network requests, no external assets.
+//   * Draw in a virtual 1920x1080 space; the runtime scales it to "cover".
+//   * Put ALL timing in update(dt) / sim-time timers (after/every). Never use
+//     setTimeout/setInterval for animation — those keep running while paused
+//     and break ?still rendering.
+//   * Use rand() (seeded) instead of Math.random().
+//
+// URL params:  ?fps=30      frame cap (host passes 30; default 60)
+//              ?seed=123    deterministic randomness
+//              ?still=1&t=8 simulate 8s of scene time, draw one frame, stop
+//                           (used to generate theme background stills)
+// Host API:    window.livewall.pause() / resume() / paused
+// ============================================================================
+const LW = (() => {
+  const params = new URLSearchParams(location.search);
+  const VW = 1920, VH = 1080;
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  let seed = (Number(params.get('seed')) || (Date.now() % 2147483647)) >>> 0;
+  function rand() { // mulberry32
+    seed = (seed + 0x6D2B79F5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const range = (a, b) => a + rand() * (b - a);
+  const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+  // sim-time scheduler
+  let simTime = 0;
+  const timers = [];
+  function after(sec, fn) { timers.push({ at: simTime + sec, fn }); }
+  function every(minSec, maxSec, fn) {
+    const go = () => { fn(); after(range(minSec, maxSec), go); };
+    after(range(minSec, maxSec), go);
+  }
+  function runTimers() {
+    for (let i = timers.length - 1; i >= 0; i--) {
+      if (timers[i].at <= simTime) { const t = timers.splice(i, 1)[0]; t.fn(); }
+    }
+  }
+
+  const view = { scale: 1, ox: 0, oy: 0, w: 0, h: 0, dpr: 1 };
+  function resize() {
+    view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    view.w = Math.round(innerWidth * view.dpr);
+    view.h = Math.round(innerHeight * view.dpr);
+    canvas.width = view.w; canvas.height = view.h;
+    view.scale = Math.max(view.w / VW, view.h / VH);
+    view.ox = (view.w - VW * view.scale) / 2;
+    view.oy = (view.h - VH * view.scale) / 2;
+    if (scene.resize) scene.resize(view);
+    drawFrame();
+  }
+
+  let scene = null, paused = false, last = 0, raf = 0;
+  const fps = Math.max(1, Number(params.get('fps')) || 60);
+  const still = params.has('still');
+
+  function step(dt) { simTime += dt; runTimers(); scene.update(dt, simTime); }
+  function drawFrame() {
+    if (!scene) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    scene.draw(ctx, simTime);
+  }
+  function loop(now) {
+    raf = 0;
+    if (paused) return;
+    raf = requestAnimationFrame(loop);
+    if (!last) { last = now; return; }
+    const elapsed = now - last;
+    if (elapsed < 1000 / fps - 2) return;
+    last = now;
+    step(Math.min(elapsed / 1000, 0.1));
+    drawFrame();
+  }
+  function pause() { paused = true; if (raf) cancelAnimationFrame(raf); raf = 0; }
+  function resume() { if (still) return; paused = false; last = 0; if (!raf) raf = requestAnimationFrame(loop); }
+
+  function start(s) {
+    scene = s;
+    if (scene.init) scene.init(view);
+    addEventListener('resize', resize);
+    resize();
+    if (still) {
+      const T = Number(params.get('t')) || 8;
+      while (simTime < T) step(1 / 30);
+      drawFrame();
+      document.title += ' [still]';
+      return;
+    }
+    document.addEventListener('visibilitychange', () => document.hidden ? pause() : resume());
+    resume();
+  }
+
+  window.livewall = { pause, resume, get paused() { return paused; } };
+  return { VW, VH, ctx, rand, range, pick, after, every, start, view,
+           get time() { return simTime; } };
+})();
+// ============================== end runtime =================================
+
+// ---- scene: Carbon ------------------------------------------------------------
+// Carbon-fiber twill weave with a slowly drifting specular sheen, engraved
+// circuit traces that carry electric-blue pulses at random intervals, a soft
+// ambient LED strip, rare diagonal light sweeps and a few drifting motes.
+const { VW, VH, rand, range, pick, after, every } = LW;
+
+const BLUE = [74, 140, 255];          // LED blue
+const CORE = [190, 220, 255];         // hot core
+
+// texture-only PRNG so resizes never disturb the seeded event sequence
+function texRng(s) {
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0; let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function mkCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+  return c;
+}
+
+const S = { // pre-rendered layers
+  k: 1, base: null, hiH: null, hiV: null, tmp: null, tctx: null,
+  glow: null, strip: null,
+};
+const world = {
+  buses: [], traces: [], pulses: [], motes: [], sweep: null, scan: null,
+  sheen: [], stripY: 842, stripX0: 420, stripX1: 1480,
+};
+
+// ---------------------------------------------------------------- layout ----
+const DIRS = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]]
+  .map(([x, y]) => { const l = Math.hypot(x, y); return [x / l, y / l]; });
+
+function makeBus(x, y, h0, maxLen, region) {
+  const pts = [[x, y]];
+  let h = h0, total = 0;
+  const nseg = 3 + Math.floor(rand() * 3);
+  for (let i = 0; i < nseg && total < maxLen; i++) {
+    if (i > 0) {
+      if (h === h0) h = (h0 + (rand() < 0.5 ? 1 : 7)) % 8;
+      else if (rand() < 0.75) h = h0;
+    }
+    const len = i === 0 ? range(170, 320) : range(70, 230);
+    const [px, py] = pts[pts.length - 1];
+    let nx = px + DIRS[h][0] * len, ny = py + DIRS[h][1] * len;
+    if (nx < region[0] || nx > region[2] || ny < region[1] || ny > region[3]) {
+      if (i < 2) { h = h0; nx = px + DIRS[h][0] * len; ny = py + DIRS[h][1] * len; }
+      else break;
+    }
+    pts.push([nx, ny]); total += len;
+  }
+  return pts;
+}
+
+function offsetPolyline(pts, off) {
+  const n = pts.length, out = [];
+  const nrm = [];
+  for (let i = 0; i < n - 1; i++) {
+    const dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1];
+    const l = Math.hypot(dx, dy); nrm.push([-dy / l, dx / l]);
+  }
+  for (let i = 0; i < n; i++) {
+    let mx, my;
+    if (i === 0) { [mx, my] = nrm[0]; }
+    else if (i === n - 1) { [mx, my] = nrm[n - 2]; }
+    else {
+      const a = nrm[i - 1], b = nrm[i], d = 1 + a[0] * b[0] + a[1] * b[1];
+      mx = (a[0] + b[0]) / d; my = (a[1] + b[1]) / d;
+    }
+    out.push([pts[i][0] + mx * off, pts[i][1] + my * off]);
+  }
+  return out;
+}
+
+function makeTrace(pts, bus) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  return { pts, cum, len: cum[cum.length - 1], bus, pad: 0 };
+}
+
+function pointAt(tr, s) {
+  const { pts, cum } = tr;
+  s = Math.max(0, Math.min(tr.len, s));
+  let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+  const f = (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
+  return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f,
+          pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+}
+
+function buildLayout() {
+  // four buses entering from different edges, each kept in its own quadrant
+  const specs = [
+    { x: -30, y: range(560, 700), h: 0, region: [-40, 450, 900, 770] },   // left, low
+    { x: VW + 30, y: range(200, 330), h: 4, region: [1000, 90, VW + 40, 620] }, // right, high
+    { x: range(1580, 1720), y: VH + 30, h: 6, region: [1500, 420, 1800, VH + 40] }, // bottom right
+    { x: -30, y: range(170, 270), h: 0, region: [-40, 90, 760, 440] },     // left, high
+  ];
+  if (rand() < 0.5) specs[2] = { x: VW + 30, y: range(700, 860), h: 4, region: [1150, 420, VW + 40, 770] };
+  for (const sp of specs) {
+    const center = makeBus(sp.x, sp.y, sp.h, range(650, 950), sp.region);
+    if (center.length < 2) continue;
+    const n = 2 + Math.floor(rand() * 4), gap = 13;
+    const bus = { traces: [] };
+    for (let k = 0; k < n; k++) {
+      const off = (k - (n - 1) / 2) * gap;
+      const pts = offsetPolyline(center, off);
+      // stagger the ends slightly so pads don't sit in a rigid row
+      const a = pts[pts.length - 2], b = pts[pts.length - 1];
+      const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy);
+      const ext = (k % 2) * 16 + range(-4, 4);
+      b[0] += dx / l * ext; b[1] += dy / l * ext;
+      const tr = makeTrace(pts, bus);
+      bus.traces.push(tr); world.traces.push(tr);
+    }
+    world.buses.push(bus);
+  }
+}
+
+// ---------------------------------------------------------- pre-render ----
+function weaveTile(cell, mode) {
+  const rng = texRng(9173);
+  const t = mkCanvas(cell * 4, cell * 4), c = t.getContext('2d');
+  for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
+    const horiz = ((i + j) & 3) < 2;
+    const x = i * cell, y = j * cell;
+    // position within the 2-cell float, for end shading
+    const first = horiz ? (((i + j) & 3) === 0) : (((i + j) & 3) === 2);
+    let g;
+    if (horiz) g = c.createLinearGradient(0, y, 0, y + cell);
+    else g = c.createLinearGradient(x, 0, x + cell, 0);
+    if (mode === 'base') {
+      const hi = horiz ? '#1b1f25' : '#121519', lo = horiz ? '#08090b' : '#050608';
+      g.addColorStop(0, lo); g.addColorStop(0.18, horiz ? '#13161a' : '#0d0f12');
+      g.addColorStop(0.5, hi);
+      g.addColorStop(0.82, horiz ? '#111418' : '#0b0d10'); g.addColorStop(1, lo);
+    } else {
+      const on = (mode === 'H') === horiz;
+      if (!on) continue;
+      g.addColorStop(0, 'rgba(110,135,170,0.12)');
+      g.addColorStop(0.25, 'rgba(140,165,200,0.5)');
+      g.addColorStop(0.5, 'rgba(190,208,232,0.8)');
+      g.addColorStop(0.75, 'rgba(140,165,200,0.5)');
+      g.addColorStop(1, 'rgba(110,135,170,0.12)');
+    }
+    c.fillStyle = g; c.fillRect(x, y, cell, cell);
+    // fibre striations along the tow
+    const n = Math.max(3, Math.round(cell / 2.2));
+    for (let f = 1; f < n; f++) {
+      const p = f / n * cell;
+      const a = mode === 'base' ? 0.02 + rng() * 0.06 : 0.05 + rng() * 0.12;
+      c.fillStyle = (rng() < 0.5 || mode !== 'base') ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a * 0.5})`;
+      if (horiz) c.fillRect(x, y + p, cell, Math.max(0.6, cell / 28));
+      else c.fillRect(x + p, y, Math.max(0.6, cell / 28), cell);
+    }
+    // darken where the tow dives under its neighbour
+    const eg = horiz
+      ? c.createLinearGradient(first ? x : x + cell, 0, first ? x + cell * 0.35 : x + cell * 0.65, 0)
+      : c.createLinearGradient(0, first ? y : y + cell, 0, first ? y + cell * 0.35 : y + cell * 0.65);
+    eg.addColorStop(0, mode === 'base' ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.6)');
+    eg.addColorStop(1, 'rgba(0,0,0,0)');
+    c.globalCompositeOperation = mode === 'base' ? 'source-over' : 'destination-out';
+    c.fillStyle = eg; c.fillRect(x, y, cell, cell);
+    c.globalCompositeOperation = 'source-over';
+  }
+  return t;
+}
+
+function tracePath(c, tr) {
+  c.beginPath();
+  c.moveTo(tr.pts[0][0], tr.pts[0][1]);
+  for (let i = 1; i < tr.pts.length; i++) c.lineTo(tr.pts[i][0], tr.pts[i][1]);
+}
+
+function prerender() {
+  const k = S.k = Math.min(2, Math.max(0.5, LW.view.scale || 1));
+  const W = Math.ceil(VW * k), H = Math.ceil(VH * k);
+  const cell = Math.max(4, Math.round(13 * k));
+
+  // --- base: weave + engraved traces + lighting
+  S.base = mkCanvas(W, H);
+  let c = S.base.getContext('2d');
+  c.fillStyle = c.createPattern(weaveTile(cell, 'base'), 'repeat');
+  c.fillRect(0, 0, W, H);
+  c.setTransform(k, 0, 0, k, 0, 0);
+  // engraved grooves
+  c.lineJoin = 'miter'; c.lineCap = 'round';
+  for (const tr of world.traces) {
+    tracePath(c, tr);
+    c.strokeStyle = 'rgba(0,0,0,0.75)'; c.lineWidth = 5; c.stroke();
+    c.strokeStyle = 'rgba(70,95,130,0.22)'; c.lineWidth = 1.2; c.stroke();
+    const e = tr.pts[tr.pts.length - 1];
+    c.beginPath(); c.arc(e[0], e[1], 5.5, 0, Math.PI * 2);
+    c.fillStyle = 'rgba(0,0,0,0.8)'; c.fill();
+    c.beginPath(); c.arc(e[0], e[1], 3.2, 0, Math.PI * 2);
+    c.strokeStyle = 'rgba(90,120,160,0.35)'; c.lineWidth = 1; c.stroke();
+  }
+  // deep blue ambient spill near the strip
+  let g = c.createRadialGradient(960, world.stripY, 0, 960, world.stripY, 900);
+  g.addColorStop(0, 'rgba(30,70,170,0.16)'); g.addColorStop(0.5, 'rgba(20,45,120,0.06)');
+  g.addColorStop(1, 'rgba(10,20,60,0)');
+  c.save(); c.translate(960, world.stripY); c.scale(1, 0.45); c.translate(-960, -world.stripY);
+  c.fillStyle = g; c.fillRect(0, 0, VW, VH * 3); c.restore();
+  // top shade for the bar, then vignette
+  g = c.createLinearGradient(0, 0, 0, 220);
+  g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.fillRect(0, 0, VW, 220);
+  g = c.createRadialGradient(960, 560, 250, 960, 560, 1250);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.55, 'rgba(0,0,0,0.35)');
+  g.addColorStop(1, 'rgba(0,0,0,0.88)');
+  c.fillStyle = g; c.fillRect(0, 0, VW, VH);
+
+  // --- directional highlight layers (revealed by moving masks)
+  for (const m of ['H', 'V']) {
+    const cv = mkCanvas(W, H), cc = cv.getContext('2d');
+    cc.fillStyle = cc.createPattern(weaveTile(cell, m), 'repeat');
+    cc.fillRect(0, 0, W, H);
+    if (m === 'H') S.hiH = cv; else S.hiV = cv;
+  }
+
+  S.tmp = mkCanvas(W, H); S.tctx = S.tmp.getContext('2d');
+
+  // --- glow sprite
+  S.glow = mkCanvas(64, 64);
+  c = S.glow.getContext('2d');
+  g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(210,230,255,1)'); g.addColorStop(0.12, 'rgba(120,175,255,0.75)');
+  g.addColorStop(0.4, 'rgba(50,110,255,0.22)'); g.addColorStop(1, 'rgba(30,80,255,0)');
+  c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+
+  // --- ambient strip sprite (virtual size: length x 80)
+  const sl = world.stripX1 - world.stripX0, sh = 80;
+  S.strip = mkCanvas((sl + 160) * k, sh * k);
+  c = S.strip.getContext('2d'); c.setTransform(k, 0, 0, k, 0, 0);
+  const taper = c.createLinearGradient(80, 0, 80 + sl, 0);
+  taper.addColorStop(0, 'rgba(0,0,0,0)'); taper.addColorStop(0.18, 'rgba(0,0,0,1)');
+  taper.addColorStop(0.82, 'rgba(0,0,0,1)'); taper.addColorStop(1, 'rgba(0,0,0,0)');
+  g = c.createLinearGradient(0, 0, 0, sh);
+  g.addColorStop(0, 'rgba(40,90,255,0)'); g.addColorStop(0.42, 'rgba(45,100,255,0.14)');
+  g.addColorStop(0.5, 'rgba(60,120,255,0.3)');
+  g.addColorStop(0.58, 'rgba(45,100,255,0.14)'); g.addColorStop(1, 'rgba(40,90,255,0)');
+  c.fillStyle = g; c.fillRect(80, 0, sl, sh);
+  c.fillStyle = 'rgba(120,175,255,0.9)'; c.fillRect(80, sh / 2 - 1, sl, 2);
+  c.fillStyle = 'rgba(220,235,255,0.8)'; c.fillRect(80, sh / 2 - 0.4, sl, 0.8);
+  c.globalCompositeOperation = 'destination-in';
+  c.fillStyle = taper; c.fillRect(0, 0, sl + 160, sh);
+}
+
+// draw `layer` through a mask painted in virtual coords inside bbox
+function masked(ctx, layer, bx, by, bw, bh, paint, alpha) {
+  const k = S.k, t = S.tctx;
+  let sx = Math.max(0, Math.floor(bx * k)), sy = Math.max(0, Math.floor(by * k));
+  const ex = Math.min(layer.width, Math.ceil((bx + bw) * k));
+  const ey = Math.min(layer.height, Math.ceil((by + bh) * k));
+  const sw = ex - sx, sh = ey - sy;
+  if (sw <= 0 || sh <= 0 || alpha <= 0.003) return;
+  t.setTransform(1, 0, 0, 1, 0, 0);
+  t.globalCompositeOperation = 'source-over';
+  t.clearRect(0, 0, sw, sh);
+  t.drawImage(layer, sx, sy, sw, sh, 0, 0, sw, sh);
+  t.globalCompositeOperation = 'destination-in';
+  t.setTransform(k, 0, 0, k, -sx, -sy);
+  paint(t);
+  t.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(S.tmp, 0, 0, sw, sh, sx / k, sy / k, sw / k, sh / k);
+  ctx.globalAlpha = 1;
+}
+
+// ------------------------------------------------------------- events ----
+function spawnPulse(tr, delay = 0, s0 = null) {
+  world.pulses.push({
+    tr, s: s0 !== null ? s0 : -delay * 500, v: range(380, 620),
+    tail: range(140, 260), a: range(0.75, 1),
+  });
+}
+
+function startSweep() {
+  world.sweep = { p: 0, dur: range(2.6, 3.6), ang: range(-0.75, -0.45), a: range(0.4, 0.65) };
+}
+
+// ---------------------------------------------------------------- scene ----
+LW.start({
+  init() {
+    buildLayout();
+    // sheen spots: slow lissajous drifts with independent phases
+    world.sheen = [
+      { layer: 'H', ax: range(0, 6.28), ay: range(0, 6.28), fx: range(0.011, 0.017), fy: range(0.008, 0.013), a: 0.42, r: 640 },
+      { layer: 'V', ax: range(0, 6.28), ay: range(0, 6.28), fx: range(0.009, 0.014), fy: range(0.012, 0.018), a: 0.3, r: 540 },
+    ];
+    for (let i = 0; i < 70; i++) {
+      world.motes.push({
+        x: range(0, VW), y: range(60, VH), vx: range(-4, 4), vy: range(-9, -2),
+        r: range(0.5, 1.6), ph: range(0, 6.28), f: range(0.3, 1.1), b: range(0.15, 0.6),
+      });
+    }
+    // something already in flight at t=0
+    for (let i = 0; i < 3; i++) { const tr = pick(world.traces); spawnPulse(tr, 0, range(0.2, 0.8) * tr.len); }
+
+    every(0.7, 3.2, () => spawnPulse(pick(world.traces)));
+    every(8, 20, () => {           // whole-bus burst
+      const bus = pick(world.buses);
+      const order = rand() < 0.5 ? bus.traces : bus.traces.slice().reverse();
+      order.forEach((tr, i) => spawnPulse(tr, i * 0.09));
+    });
+    after(range(3, 7), () => { startSweep(); every(16, 40, startSweep); });
+    every(7, 19, () => { world.scan = { p: 0, dir: rand() < 0.5 ? 1 : -1, v: range(0.35, 0.55) }; });
+  },
+  resize() { prerender(); },
+  update(dt, t) {
+    for (let i = world.pulses.length - 1; i >= 0; i--) {
+      const p = world.pulses[i];
+      const was = p.s;
+      p.s += p.v * dt;
+      if (was < p.tr.len && p.s >= p.tr.len) p.tr.pad = 1;
+      if (p.s - p.tail > p.tr.len) world.pulses.splice(i, 1);
+    }
+    for (const tr of world.traces) tr.pad = Math.max(0, tr.pad - dt * 0.9);
+    if (world.sweep) { world.sweep.p += dt / world.sweep.dur; if (world.sweep.p >= 1) world.sweep = null; }
+    if (world.scan) { world.scan.p += dt * world.scan.v; if (world.scan.p >= 1) world.scan = null; }
+    for (const m of world.motes) {
+      m.x += (m.vx + Math.sin(t * 0.3 + m.ph) * 3) * dt; m.y += m.vy * dt;
+      if (m.y < 50) { m.y = VH + 5; m.x = range(0, VW); }
+      if (m.x < -10) m.x = VW + 10; else if (m.x > VW + 10) m.x = -10;
+    }
+  },
+  draw(ctx, t) {
+    ctx.drawImage(S.base, 0, 0, VW, VH);
+
+    // broad drifting specular sheen on each tow direction
+    for (const sp of world.sheen) {
+      const cx = 960 + Math.sin(t * sp.fx * 6.283 + sp.ax) * 620;
+      const cy = 560 + Math.sin(t * sp.fy * 6.283 + sp.ay) * 300;
+      const r = sp.r, rot = -0.5 + Math.sin(t * 0.01 + sp.ax) * 0.25;
+      const cr = Math.cos(rot), sr = Math.sin(rot);
+      const hw = r * Math.hypot(cr, 0.42 * sr), hh = r * Math.hypot(sr, 0.42 * cr);
+      masked(ctx, sp.layer === 'H' ? S.hiH : S.hiV, cx - hw, cy - hh, hw * 2, hh * 2, (c) => {
+        c.translate(cx, cy); c.rotate(rot); c.scale(1, 0.42);
+        const g = c.createRadialGradient(0, 0, 0, 0, 0, r);
+        g.addColorStop(0, 'rgba(0,0,0,0.85)'); g.addColorStop(0.35, 'rgba(0,0,0,0.45)');
+        g.addColorStop(0.7, 'rgba(0,0,0,0.12)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+        c.fillStyle = g; c.fillRect(-r, -r, r * 2, r * 2);
+      }, sp.a);
+    }
+
+    // rare diagonal light sweep across the weave
+    const sw = world.sweep;
+    if (sw) {
+      const e = sw.p * sw.p * (3 - 2 * sw.p);
+      const reach = 1400, pos = -reach + e * reach * 2, bw = 170;
+      const env = Math.sin(Math.PI * sw.p);
+      const paint = (c) => {
+        c.translate(960, 540); c.rotate(sw.ang + Math.PI / 2);
+        const g = c.createLinearGradient(pos - bw, 0, pos + bw, 0);
+        g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.42, 'rgba(0,0,0,0.6)');
+        g.addColorStop(0.5, 'rgba(0,0,0,1)'); g.addColorStop(0.58, 'rgba(0,0,0,0.6)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        c.fillStyle = g; c.fillRect(pos - bw, -1300, bw * 2, 2600);
+      };
+      masked(ctx, S.hiH, 0, 0, VW, VH, paint, sw.a * env);
+      masked(ctx, S.hiV, 0, 0, VW, VH, paint, sw.a * env * 0.8);
+    }
+
+    // traces: breathing ambient glow
+    ctx.globalCompositeOperation = 'lighter';
+    const br = 0.42 + 0.14 * Math.sin(t * 0.45);
+    ctx.lineJoin = 'miter'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const tr of world.traces) {
+      ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
+      for (let i = 1; i < tr.pts.length; i++) ctx.lineTo(tr.pts[i][0], tr.pts[i][1]);
+    }
+    ctx.strokeStyle = `rgba(50,110,255,${0.10 * br})`; ctx.lineWidth = 7; ctx.stroke();
+    ctx.strokeStyle = `rgba(70,140,255,${0.55 * br})`; ctx.lineWidth = 1.3; ctx.stroke();
+
+    // pulses
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const p of world.pulses) {
+      const tr = p.tr, head = Math.min(p.s, tr.len), tail0 = p.s - p.tail;
+      if (head <= 0) continue;
+      const N = 10;
+      for (let i = 0; i < N; i++) {
+        const s0 = Math.max(0, tail0 + p.tail * i / N), s1 = Math.min(head, tail0 + p.tail * (i + 1) / N);
+        if (s1 <= s0) continue;
+        const a0 = pointAt(tr, s0), a1 = pointAt(tr, s1);
+        // include a corner if one lies inside this piece
+        ctx.beginPath(); ctx.moveTo(a0[0], a0[1]);
+        for (let j = 1; j < tr.cum.length - 1; j++)
+          if (tr.cum[j] > s0 && tr.cum[j] < s1) ctx.lineTo(tr.pts[j][0], tr.pts[j][1]);
+        ctx.lineTo(a1[0], a1[1]);
+        const f = (i + 1) / N, a = p.a * f * f;
+        ctx.strokeStyle = `rgba(${BLUE[0]},${BLUE[1]},${BLUE[2]},${a * 0.22})`; ctx.lineWidth = 8; ctx.stroke();
+        ctx.strokeStyle = `rgba(${CORE[0]},${CORE[1]},${CORE[2]},${a})`; ctx.lineWidth = 1.7; ctx.stroke();
+      }
+      if (p.s < tr.len) {
+        const h = pointAt(tr, head);
+        ctx.globalAlpha = p.a; ctx.drawImage(S.glow, h[0] - 22, h[1] - 22, 44, 44); ctx.globalAlpha = 1;
+      }
+    }
+    // pads flash on arrival
+    for (const tr of world.traces) {
+      if (tr.pad <= 0.01) continue;
+      const e = tr.pts[tr.pts.length - 1], a = tr.pad * tr.pad, r = 18 + 30 * (1 - tr.pad);
+      ctx.globalAlpha = a; ctx.drawImage(S.glow, e[0] - r, e[1] - r, r * 2, r * 2);
+      ctx.globalAlpha = 1;
+    }
+
+    // ambient LED strip with occasional scan
+    const sl = world.stripX1 - world.stripX0;
+    ctx.globalAlpha = 0.6 + 0.18 * Math.sin(t * 0.3 + 1.3);
+    ctx.drawImage(S.strip, world.stripX0 - 80, world.stripY - 40, sl + 160, 80);
+    ctx.globalAlpha = 1;
+    if (world.scan) {
+      const sc = world.scan, q = sc.dir > 0 ? sc.p : 1 - sc.p;
+      const x = world.stripX0 + sl * (0.08 + 0.84 * q), env = Math.sin(Math.PI * sc.p);
+      const g = ctx.createRadialGradient(x, world.stripY, 0, x, world.stripY, 160);
+      g.addColorStop(0, `rgba(150,195,255,${0.55 * env})`); g.addColorStop(0.3, `rgba(60,120,255,${0.18 * env})`);
+      g.addColorStop(1, 'rgba(40,90,255,0)');
+      ctx.save(); ctx.translate(x, world.stripY); ctx.scale(1, 0.12); ctx.translate(-x, -world.stripY);
+      ctx.fillStyle = g; ctx.fillRect(x - 160, world.stripY - 160, 320, 320); ctx.restore();
+      ctx.globalAlpha = env; ctx.drawImage(S.glow, x - 16, world.stripY - 16, 32, 32); ctx.globalAlpha = 1;
+    }
+
+    // motes
+    for (const m of world.motes) {
+      const a = m.b * (0.5 + 0.5 * Math.sin(t * m.f + m.ph));
+      if (a < 0.04) continue;
+      ctx.fillStyle = `rgba(150,190,255,${a})`;
+      ctx.fillRect(m.x - m.r, m.y - m.r, m.r * 2, m.r * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  },
+});
+</script>
+</body>
+</html>

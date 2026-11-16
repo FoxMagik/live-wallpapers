@@ -1,0 +1,37 @@
+mode = "dark"
+
+# Carbon — carbon-fibre black with deep electric-blue LED accents
+accent = "#4a8cff"
+selection = "#1d2c45"
+muted = "#4a5260"
+
+background = "#0c0e11"
+dark_background = "#08090b"
+darker_background = "#050608"
+lighter_background = "#1a1e24"
+
+foreground = "#d6dde8"
+dark_foreground = "#7a8494"
+light_foreground = "#b6c0ce"
+bright_foreground = "#f2f6fb"
+
+red = "#e5534b"
+yellow = "#e3b341"
+orange = "#ec8a3c"
+green = "#5fbf87"
+cyan = "#4fc3e8"
+blue = "#4a8cff"
+magenta = "#9a7cff"
+brown = "#7a5f45"
+
+bright_red = "#ff7a70"
+bright_yellow = "#f5cf6a"
+bright_green = "#82d9a5"
+bright_cyan = "#7fd8f2"
+bright_blue = "#7fb0ff"
+bright_magenta = "#b9a2ff"
+
+hyprland_active_border = "rgba(4a8cffee) rgba(1e3a8aee) 45deg"
+hyprland_inactive_border = "rgba(1a1e24aa)"
+active_border_color = "#4a8cff"
+active_tab_background = "#2563eb"

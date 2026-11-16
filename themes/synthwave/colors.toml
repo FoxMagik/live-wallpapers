@@ -1,0 +1,37 @@
+mode = "dark"
+
+# Synthwave — hot pink and electric blue neon over a deep indigo night, sunset gold
+accent = "#ff2e97"
+selection = "#3d1a66"
+muted = "#6a4f8f"
+
+background = "#140a26"
+dark_background = "#0e061c"
+darker_background = "#080312"
+lighter_background = "#24123f"
+
+foreground = "#f2e6ff"
+dark_foreground = "#8a78ad"
+light_foreground = "#d6c6f0"
+bright_foreground = "#fff6ff"
+
+red = "#ff4d6d"
+yellow = "#ffd23f"
+orange = "#ff8a3d"
+green = "#72f1b8"
+cyan = "#2de2e6"
+blue = "#5c7cff"
+magenta = "#ff4fc1"
+brown = "#8c4a5e"
+
+bright_red = "#ff7a92"
+bright_yellow = "#fff27a"
+bright_green = "#9dffd3"
+bright_cyan = "#7ff4f7"
+bright_blue = "#8fa5ff"
+bright_magenta = "#ff8ad6"
+
+hyprland_active_border = "rgba(ff2e97ee) rgba(2de2e6ee) 45deg"
+hyprland_inactive_border = "rgba(3d1a66aa)"
+active_border_color = "#ff2e97"
+active_tab_background = "#b44bff"

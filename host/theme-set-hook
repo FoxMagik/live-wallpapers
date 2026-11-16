@@ -1,0 +1,3 @@
+#!/bin/bash
+# Omarchy theme-set hook: start the live scene named after the theme, if any.
+command -v livewall >/dev/null && livewall theme "$1" || true
