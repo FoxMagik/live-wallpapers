@@ -1,0 +1,37 @@
+mode = "dark"
+
+# Aegis — futuristic holographic cyan and matrix-mint HUD over deep obsidian navy
+accent = "#00f0ff"
+selection = "#0d2b45"
+muted = "#4d7894"
+
+background = "#040a14"
+dark_background = "#03070e"
+darker_background = "#010409"
+lighter_background = "#0a192e"
+
+foreground = "#d8f8ff"
+dark_foreground = "#6494b0"
+light_foreground = "#aee8f5"
+bright_foreground = "#f2fdff"
+
+red = "#ff3b5c"
+yellow = "#ffb800"
+orange = "#ff882e"
+green = "#00ffa3"
+cyan = "#00f0ff"
+blue = "#38bdf8"
+magenta = "#a875ff"
+brown = "#6e685f"
+
+bright_red = "#ff6b84"
+bright_yellow = "#ffd04d"
+bright_green = "#5cffc0"
+bright_cyan = "#70f8ff"
+bright_blue = "#7cd4fd"
+bright_magenta = "#c49eff"
+
+hyprland_active_border = "rgba(00f0ffee) rgba(00ffa3ee) 45deg"
+hyprland_inactive_border = "rgba(0d2b45aa)"
+active_border_color = "#00f0ff"
+active_tab_background = "#0088aa"

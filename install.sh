@@ -21,4 +21,4 @@ if [[ -d ~/.config/omarchy ]]; then
     [[ -e ~/.config/omarchy/themes/$name ]] || cp -r "$t" ~/.config/omarchy/themes/
   done
 fi
-echo "Installed. Try: livewall list; livewall set helldivers"
+echo "Installed. Try: livewall list; livewall set aegis"

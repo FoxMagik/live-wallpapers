@@ -7,6 +7,10 @@ Watches Hyprland's event socket and calls window.livewall.pause()/resume() in
 the page when the desktop is covered, mirroring owe's [pause] settings in
 ~/.config/owe/config.toml (fullscreen / occupied_workspace).
 
+Also streams lightweight live system telemetry (/proc & /sys) once per second
+while unpaused to scenes that implement `window.livewall.pushStats(data)` or
+`window.onLivewallStats(data)`.
+
 usage: livewall.py <scene.html | URL> [--fps 30]
 """
 import argparse
@@ -17,6 +21,7 @@ import signal
 import socket
 import subprocess
 import threading
+import time
 import tomllib
 
 import gi
@@ -55,17 +60,231 @@ def hyprctl(*args):
         return []
 
 
+class TelemetryCollector:
+    """Zero-subprocess /proc & /sys telemetry reader for HUD scenes."""
+
+    def __init__(self):
+        self.prev_cpu = {}
+        self.prev_net = None
+        self.prev_net_t = 0.0
+        self.prev_procs = {}
+        self.prev_total_jiffies = 0
+        self.page_size = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+        un = os.uname()
+        self.hostname = un.nodename
+        self.kernel = un.release.split("-")[0]
+        self.sample()  # prime deltas
+
+    def _read_cpu(self):
+        out = {}
+        total_jiffies = 0
+        try:
+            with open("/proc/stat", "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.startswith("cpu"):
+                        break
+                    parts = line.split()
+                    name = parts[0]
+                    vals = [int(x) for x in parts[1:]]
+                    idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+                    tot = sum(vals)
+                    if name == "cpu":
+                        total_jiffies = tot
+                    prev = self.prev_cpu.get(name)
+                    self.prev_cpu[name] = (tot, idle)
+                    if prev:
+                        dtot = tot - prev[0]
+                        didle = idle - prev[1]
+                        out[name] = max(0.0, min(100.0, (dtot - didle) * 100.0 / dtot)) if dtot > 0 else 0.0
+                    else:
+                        out[name] = 0.0
+        except OSError:
+            pass
+        return out, total_jiffies
+
+    def _read_mem(self):
+        info = {}
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    k, v = line.split(":", 1)
+                    info[k.strip()] = int(v.strip().split()[0])
+        except (OSError, ValueError):
+            return {"pct": 0, "usedGb": 0, "totalGb": 16, "cachePct": 0, "swapPct": 0, "totalKb": 1}
+        tot = max(1, info.get("MemTotal", 1))
+        avail = info.get("MemAvailable", tot)
+        used = max(0, tot - avail)
+        cache = info.get("Cached", 0) + info.get("Buffers", 0)
+        stot = info.get("SwapTotal", 0)
+        sfree = info.get("SwapFree", 0)
+        return {
+            "pct": round(used * 100.0 / tot, 1),
+            "usedGb": round(used / 1048576.0, 2),
+            "totalGb": round(tot / 1048576.0, 1),
+            "cachePct": round(cache * 100.0 / tot, 1),
+            "swapPct": round((stot - sfree) * 100.0 / stot, 1) if stot > 0 else 0.0,
+            "totalKb": tot,
+        }
+
+    def _read_net(self):
+        now = time.monotonic()
+        rx_tot, tx_tot = 0, 0
+        primary_iface = "eth0"
+        best_bytes = -1
+        try:
+            with open("/proc/net/dev", "r", encoding="utf-8") as f:
+                for line in list(f)[2:]:
+                    if ":" not in line:
+                        continue
+                    iface, rest = line.split(":", 1)
+                    iface = iface.strip()
+                    if iface == "lo":
+                        continue
+                    fields = [int(x) for x in rest.split()]
+                    rx, tx = fields[0], fields[8]
+                    rx_tot += rx
+                    tx_tot += tx
+                    if rx + tx > best_bytes:
+                        best_bytes = rx + tx
+                        primary_iface = iface
+        except (OSError, ValueError, IndexError):
+            pass
+        rx_kbs, tx_kbs = 0.0, 0.0
+        if self.prev_net is not None and now > self.prev_net_t:
+            dt = now - self.prev_net_t
+            rx_kbs = max(0.0, (rx_tot - self.prev_net[0]) / 1024.0 / dt)
+            tx_kbs = max(0.0, (tx_tot - self.prev_net[1]) / 1024.0 / dt)
+        self.prev_net = (rx_tot, tx_tot)
+        self.prev_net_t = now
+        return {"rxKbs": round(rx_kbs, 1), "txKbs": round(tx_kbs, 1), "iface": primary_iface}
+
+    def _read_temps(self):
+        temps = {}
+        try:
+            for hw in pathlib.Path("/sys/class/hwmon").iterdir():
+                try:
+                    name = (hw / "name").read_text(encoding="utf-8").strip()
+                    raw = int((hw / "temp1_input").read_text(encoding="utf-8").strip()) / 1000.0
+                except (OSError, ValueError):
+                    continue
+                if raw <= 0 or raw > 150:
+                    continue
+                if name in ("coretemp", "k10temp", "zenpower", "cpu_thermal"):
+                    temps["cpu"] = round(raw, 1)
+                elif name == "nvme":
+                    temps["nvme"] = round(raw, 1)
+                elif "wifi" in name:
+                    temps["wifi"] = round(raw, 1)
+                elif "pch" in name or "smm" in name or "acpitz" in name:
+                    temps.setdefault("sys", round(raw, 1))
+        except OSError:
+            pass
+        return temps
+
+    def _read_procs(self, dt_jiffies, mem_total_kb, num_cores):
+        procs = []
+        new_prev = {}
+        denom = max(1, dt_jiffies) / max(1, num_cores)
+        try:
+            for entry in os.scandir("/proc"):
+                if not entry.name.isdigit():
+                    continue
+                pid = int(entry.name)
+                try:
+                    with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as f:
+                        s = f.read()
+                    rpar = s.rfind(")")
+                    comm = s[s.find("(") + 1:rpar][:14]
+                    fields = s[rpar + 2:].split()
+                    utime = int(fields[11])
+                    stime = int(fields[12])
+                    rss_kb = (int(fields[21]) * self.page_size) // 1024
+                    ticks = utime + stime
+                    new_prev[pid] = ticks
+                    prev_ticks = self.prev_procs.get(pid, ticks)
+                    cpu_pct = max(0.0, min(100.0, (ticks - prev_ticks) * 100.0 / denom))
+                    mem_pct = max(0.0, min(100.0, rss_kb * 100.0 / mem_total_kb))
+                    if cpu_pct >= 0.1 or mem_pct >= 0.6:
+                        procs.append((cpu_pct + mem_pct * 0.25, pid, comm, round(cpu_pct, 1), round(mem_pct, 1)))
+                except (OSError, ValueError, IndexError):
+                    continue
+        except OSError:
+            pass
+        self.prev_procs = new_prev
+        procs.sort(reverse=True)
+        return [{"pid": p[1], "name": p[2], "cpu": p[3], "mem": p[4]} for p in procs[:6]]
+
+    def sample(self):
+        cpus, total_jiffies = self._read_cpu()
+        dt_jiffies = max(1, total_jiffies - self.prev_total_jiffies)
+        self.prev_total_jiffies = total_jiffies
+        cores = [round(cpus[k], 1) for k in sorted((k for k in cpus if k != "cpu"), key=lambda s: int(s[3:]))]
+        mem = self._read_mem()
+        net = self._read_net()
+        temps = self._read_temps()
+        procs = self._read_procs(dt_jiffies, mem["totalKb"], len(cores) or 1)
+        mem.pop("totalKb", None)
+
+        disk = {"pct": 0.0, "usedGb": 0.0, "totalGb": 100.0}
+        try:
+            st = os.statvfs("/")
+            tot = st.f_blocks * st.f_frsize
+            free = st.f_bavail * st.f_frsize
+            used = max(0, tot - free)
+            if tot > 0:
+                disk = {
+                    "pct": round(used * 100.0 / tot, 1),
+                    "usedGb": round(used / (1024 ** 3), 1),
+                    "totalGb": round(tot / (1024 ** 3), 1),
+                }
+        except OSError:
+            pass
+
+        load = [0.0, 0.0, 0.0]
+        tasks = "1/256"
+        try:
+            parts = pathlib.Path("/proc/loadavg").read_text(encoding="utf-8").split()
+            load = [round(float(parts[0]), 2), round(float(parts[1]), 2), round(float(parts[2]), 2)]
+            tasks = parts[3]
+        except (OSError, ValueError, IndexError):
+            pass
+
+        uptime = 0
+        try:
+            uptime = int(float(pathlib.Path("/proc/uptime").read_text(encoding="utf-8").split()[0]))
+        except (OSError, ValueError, IndexError):
+            pass
+
+        return {
+            "live": True,
+            "host": self.hostname,
+            "kernel": self.kernel,
+            "cpu": round(cpus.get("cpu", 0.0), 1),
+            "cores": cores,
+            "mem": mem,
+            "disk": disk,
+            "net": net,
+            "temps": temps,
+            "load": load,
+            "tasks": tasks,
+            "uptime": uptime,
+            "procs": procs,
+        }
+
+
 class Host:
     def __init__(self, url, fps):
         self.url = url
         self.fps = fps
         self.policy = load_pause_policy()
-        self.views = {}  # (x, y) -> (window, webview, paused-state)
+        self.views = {}  # (x, y) -> [window, webview, paused-state]
         self.pending = False
+        self.telemetry = TelemetryCollector()
         display = Gdk.Display.get_default()
         for i in range(display.get_n_monitors()):
             self.add_monitor(display.get_monitor(i))
         GLib.timeout_add(1500, self.recompute)  # settle once pages have loaded
+        GLib.timeout_add(1000, self.push_telemetry)
         threading.Thread(target=self.watch_hyprland, daemon=True).start()
 
     def add_monitor(self, mon):
@@ -96,6 +315,15 @@ class Host:
         win.show_all()
         win.input_shape_combine_region(cairo.Region())  # click-through
         self.views[(geo.x, geo.y)] = [win, view, None]
+
+    def push_telemetry(self):
+        active_views = [entry[1] for entry in self.views.values() if not entry[2]]
+        if active_views:
+            payload = json.dumps(self.telemetry.sample(), separators=(",", ":"))
+            js = f"window.livewall && window.livewall.pushStats && window.livewall.pushStats({payload})"
+            for view in active_views:
+                view.evaluate_javascript(js, -1, None, None, None, None, None)
+        return True
 
     # --- pause policy ---------------------------------------------------------
     def recompute(self):
