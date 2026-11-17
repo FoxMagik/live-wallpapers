@@ -10,6 +10,7 @@ Each scene is one self-contained HTML file. Scenes make no network requests and 
 
 | Scene | Theme |
 |---|---|
+| `lcars` | Star Trek TNG Engineering Okudagram with live system telemetry, isolinear core bars and warp core |
 | `aegis` | Futuristic holographic command HUD with live system telemetry, bar readouts and a 3D geodesic core |
 | `helldivers` | A Super Destroyer calls down stratagem beams and hellpods. Battles flash on the horizon. |
 | `carbon` | Sleek carbon fiber with electric-blue light traces |

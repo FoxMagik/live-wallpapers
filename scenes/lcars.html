@@ -1,0 +1,1092 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LCARS</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+// ============================================================================
+// livewall runtime — copy this block unchanged into every scene.
+//
+// Scene contract:
+//   * Self-contained single file. No network requests, no external assets.
+//   * Draw in a virtual 1920x1080 space; the runtime scales it to "cover".
+//   * Put ALL timing in update(dt) / sim-time timers (after/every). Never use
+//     setTimeout/setInterval for animation — those keep running while paused
+//     and break ?still rendering.
+//   * Use rand() (seeded) instead of Math.random().
+//
+// URL params:  ?fps=30      frame cap (host passes 30; default 60)
+//              ?seed=123    deterministic randomness
+//              ?still=1&t=8 simulate 8s of scene time, draw one frame, stop
+//                           (used to generate theme background stills)
+// Host API:    window.livewall.pause() / resume() / paused
+// ============================================================================
+const LW = (() => {
+  const params = new URLSearchParams(location.search);
+  const VW = 1920, VH = 1080;
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  let seed = (Number(params.get('seed')) || (Date.now() % 2147483647)) >>> 0;
+  function rand() { // mulberry32
+    seed = (seed + 0x6D2B79F5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const range = (a, b) => a + rand() * (b - a);
+  const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+  // sim-time scheduler
+  let simTime = 0;
+  const timers = [];
+  function after(sec, fn) { timers.push({ at: simTime + sec, fn }); }
+  function every(minSec, maxSec, fn) {
+    const go = () => { fn(); after(range(minSec, maxSec), go); };
+    after(range(minSec, maxSec), go);
+  }
+  function runTimers() {
+    for (let i = timers.length - 1; i >= 0; i--) {
+      if (timers[i].at <= simTime) { const t = timers.splice(i, 1)[0]; t.fn(); }
+    }
+  }
+
+  const view = { scale: 1, ox: 0, oy: 0, w: 0, h: 0, dpr: 1 };
+  function resize() {
+    view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    view.w = Math.round(innerWidth * view.dpr);
+    view.h = Math.round(innerHeight * view.dpr);
+    canvas.width = view.w; canvas.height = view.h;
+    view.scale = Math.max(view.w / VW, view.h / VH);
+    view.ox = (view.w - VW * view.scale) / 2;
+    view.oy = (view.h - VH * view.scale) / 2;
+    if (scene.resize) scene.resize(view);
+    drawFrame();
+  }
+
+  let scene = null, paused = false, last = 0, raf = 0;
+  const fps = Math.max(1, Number(params.get('fps')) || 60);
+  const still = params.has('still');
+
+  function step(dt) { simTime += dt; runTimers(); scene.update(dt, simTime); }
+  function drawFrame() {
+    if (!scene) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    scene.draw(ctx, simTime);
+  }
+  function loop(now) {
+    raf = 0;
+    if (paused) return;
+    raf = requestAnimationFrame(loop);
+    if (!last) { last = now; return; }
+    const elapsed = now - last;
+    if (elapsed < 1000 / fps - 2) return;
+    last = now;
+    step(Math.min(elapsed / 1000, 0.1));
+    drawFrame();
+  }
+  function pause() { paused = true; if (raf) cancelAnimationFrame(raf); raf = 0; }
+  function resume() { if (still) return; paused = false; last = 0; if (!raf) raf = requestAnimationFrame(loop); }
+
+  function start(s) {
+    scene = s;
+    if (scene.init) scene.init(view);
+    addEventListener('resize', resize);
+    resize();
+    if (still) {
+      const T = Number(params.get('t')) || 8;
+      while (simTime < T) step(1 / 30);
+      drawFrame();
+      document.title += ' [still]';
+      return;
+    }
+    document.addEventListener('visibilitychange', () => document.hidden ? pause() : resume());
+    resume();
+  }
+
+  window.livewall = { pause, resume, get paused() { return paused; } };
+  return { VW, VH, ctx, rand, range, pick, after, every, start, view,
+           get time() { return simTime; } };
+})();
+// ============================== end runtime =================================
+
+// ---- scene: LCARS — Star Trek TNG Engineering & Telemetry Console ----------
+// 24th-century USS Enterprise-D (NCC-1701-D) Okudagram LCARS interface.
+// Displays real-time PC telemetry (per-core CPU utilization, RAM/cache/swap,
+// root storage, network subspace RX/TX spectrum, thermal sensors, load queue,
+// and active processes) via `livewall.py` or localhost polling (`127.0.0.1:19845`),
+// with a deterministic seeded simulation fallback for standalone browsers/stills.
+const { VW, VH, rand, range, pick, after, every } = LW;
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Authentic TNG LCARS Okudagram palette
+const P = {
+  bg: '#000000',
+  amber: '#ff9900',
+  gold: '#ffaa22',
+  peach: '#ffcc99',
+  tan: '#ff9966',
+  periwinkle: '#9999ff',
+  ice: '#99ccff',
+  lilac: '#cc99cc',
+  plum: '#cc6699',
+  red: '#dd4444',
+  text: '#ffdd99',
+  white: '#fff4e0',
+  dim: '#261a0d',
+  dimBlue: '#181a33',
+};
+
+const F_LCARS = '"Nimbus Sans Narrow", "ShureTechMono Nerd Font", "Liberation Sans", sans-serif';
+const F_MONO = '"ShureTechMono Nerd Font", "MonaspiceKr Nerd Font", "JetBrainsMono Nerd Font", monospace';
+
+let PS = 1;
+const L = {};
+
+function mk(w, h, s = PS) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.ceil(w * s));
+  c.height = Math.max(1, Math.ceil(h * s));
+  const g = c.getContext('2d');
+  g.scale(s, s);
+  return [c, g];
+}
+
+// Helper to draw tall condensed LCARS text (authentic Swiss-911 / Okuda aspect ratio)
+function lcarsText(ctx, str, x, y, size, col, align = 'left', condense = 0.78) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(condense, 1);
+  ctx.font = `900 ${size}px ${F_LCARS}`;
+  ctx.fillStyle = col;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(str).toUpperCase(), 0, 0);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Signature LCARS Geometric Primitives (Swept Elbows, Pills, Cap Bars)
+// ---------------------------------------------------------------------------
+/**
+ * Draws a classic 90-degree swept LCARS elbow.
+ * vSide: 'left' | 'right'
+ * hSide: 'top'  | 'bottom'
+ */
+function drawElbow(g, x, y, w, h, vThick, hThick, rOut, rIn, vSide, hSide, col) {
+  g.fillStyle = col;
+  g.beginPath();
+  if (vSide === 'left' && hSide === 'top') {
+    g.moveTo(x, y + h);
+    g.lineTo(x, y + rOut);
+    g.arcTo(x, y, x + rOut, y, rOut);
+    g.lineTo(x + w, y);
+    g.lineTo(x + w, y + hThick);
+    g.lineTo(x + vThick + rIn, y + hThick);
+    g.arcTo(x + vThick, y + hThick, x + vThick, y + hThick + rIn, rIn);
+    g.lineTo(x + vThick, y + h);
+  } else if (vSide === 'left' && hSide === 'bottom') {
+    g.moveTo(x, y);
+    g.lineTo(x + vThick, y);
+    g.lineTo(x + vThick, y + h - hThick - rIn);
+    g.arcTo(x + vThick, y + h - hThick, x + vThick + rIn, y + h - hThick, rIn);
+    g.lineTo(x + w, y + h - hThick);
+    g.lineTo(x + w, y + h);
+    g.lineTo(x + rOut, y + h);
+    g.arcTo(x, y + h, x, y + h - rOut, rOut);
+  } else if (vSide === 'right' && hSide === 'top') {
+    g.moveTo(x, y);
+    g.lineTo(x + w - rOut, y);
+    g.arcTo(x + w, y, x + w, y + rOut, rOut);
+    g.lineTo(x + w, y + h);
+    g.lineTo(x + w - vThick, y + h);
+    g.lineTo(x + w - vThick, y + hThick + rIn);
+    g.arcTo(x + w - vThick, y + hThick, x + w - vThick - rIn, y + hThick, rIn);
+    g.lineTo(x, y + hThick);
+  } else {
+    // right & bottom
+    g.moveTo(x + w - vThick, y);
+    g.lineTo(x + w, y);
+    g.lineTo(x + w, y + h - rOut);
+    g.arcTo(x + w, y + h, x + w - rOut, y + h, rOut);
+    g.lineTo(x, y + h);
+    g.lineTo(x, y + h - hThick);
+    g.lineTo(x + w - vThick - rIn, y + h - hThick);
+    g.arcTo(x + w - vThick, y + h - hThick, x + w - vThick, y + h - hThick - rIn, rIn);
+  }
+  g.closePath();
+  g.fill();
+}
+
+/**
+ * Draws an LCARS horizontal bar with optional rounded pill caps on left/right.
+ */
+function drawCapBar(g, x, y, w, h, col, roundL = false, roundR = false) {
+  const r = h / 2;
+  g.fillStyle = col;
+  g.beginPath();
+  g.moveTo(x + (roundL ? r : 0), y);
+  g.lineTo(x + w - (roundR ? r : 0), y);
+  if (roundR) g.arc(x + w - r, y + r, r, -Math.PI / 2, Math.PI / 2);
+  else g.lineTo(x + w, y + h);
+  g.lineTo(x + (roundL ? r : 0), y + h);
+  if (roundL) g.arc(x + r, y + r, r, Math.PI / 2, -Math.PI / 2);
+  else g.lineTo(x, y);
+  g.closePath();
+  g.fill();
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry State & Live / Polling / Simulated Data Pipeline
+// ---------------------------------------------------------------------------
+const CORE_COUNT = 8;
+const HIST_LEN = 56;
+const NET_BINS = 24;
+
+const T = {
+  live: false,
+  directPush: false,
+  lastPushSimTime: -999,
+  host: 'USS-ENTERPRISE',
+  kernel: '7.2.15',
+  iface: 'wlo1',
+  tasks: '2/648',
+  uptimeBase: 513120,
+
+  cpu: 32.4,
+  cpuTarget: 32.4,
+  cores: new Array(CORE_COUNT).fill(25),
+  coreTargets: new Array(CORE_COUNT).fill(25),
+  corePeaks: new Array(CORE_COUNT).fill(38),
+
+  memPct: 38.4,
+  memTarget: 38.4,
+  memUsedGb: 5.84,
+  memTotalGb: 15.2,
+  cachePct: 68.0,
+  cacheTarget: 68.0,
+  swapPct: 4.2,
+  swapTarget: 4.2,
+
+  diskPct: 24.4,
+  diskUsedGb: 57.8,
+  diskTotalGb: 236.5,
+
+  rxKbs: 420.5,
+  txKbs: 88.4,
+  rxTarget: 420.5,
+  txTarget: 88.4,
+  rxBins: new Array(NET_BINS).fill(0.35),
+  txBins: new Array(NET_BINS).fill(0.20),
+
+  temps: { cpu: 52.0, gpu: 47.0, nvme: 36.2, sys: 38.5 },
+  tempTargets: { cpu: 52.0, gpu: 47.0, nvme: 36.2, sys: 38.5 },
+
+  load: [0.88, 0.65, 0.48],
+  loadTargets: [0.88, 0.65, 0.48],
+
+  cpuHist: new Array(HIST_LEN).fill(28),
+  loadHist: new Array(HIST_LEN).fill(20),
+
+  procs: [
+    { pid: 1701, name: 'hyprland', cpu: 9.2, mem: 2.8 },
+    { pid: 2109, name: 'quickshell', cpu: 5.4, mem: 3.9 },
+    { pid: 4747, name: 'livewall.py', cpu: 4.1, mem: 1.6 },
+    { pid: 6830, name: 'chromium', cpu: 6.8, mem: 8.4 },
+    { pid: 9120, name: 'ghostty', cpu: 2.8, mem: 1.9 },
+    { pid: 1104, name: 'pipewire', cpu: 1.4, mem: 0.7 },
+  ],
+
+  matrixDigits: [],
+  activePad: 0,
+  warpPhase: 0,
+};
+
+if (window.livewall) {
+  window.livewall.pushStats = (data, fromHttp = false) => {
+    if (!data) return;
+    T.live = true;
+    if (!fromHttp) T.directPush = true;
+    T.lastPushSimTime = LW.time;
+    if (data.host) T.host = String(data.host).toUpperCase();
+    if (data.kernel) T.kernel = String(data.kernel);
+    if (data.tasks) T.tasks = String(data.tasks);
+    if (typeof data.uptime === 'number') T.uptimeBase = data.uptime;
+    if (typeof data.cpu === 'number') T.cpuTarget = clamp(data.cpu, 0, 100);
+
+    if (Array.isArray(data.cores) && data.cores.length) {
+      for (let i = 0; i < CORE_COUNT; i++) {
+        const v = data.cores[i % data.cores.length] || 0;
+        T.coreTargets[i] = clamp(v, 0, 100);
+        if (v > T.corePeaks[i]) T.corePeaks[i] = clamp(v, 0, 100);
+      }
+    }
+    if (data.mem) {
+      T.memTarget = clamp(data.mem.pct || 0, 0, 100);
+      T.memUsedGb = data.mem.usedGb ?? T.memUsedGb;
+      T.memTotalGb = data.mem.totalGb ?? T.memTotalGb;
+      T.cacheTarget = clamp(data.mem.cachePct || 0, 0, 100);
+      T.swapTarget = clamp(data.mem.swapPct || 0, 0, 100);
+    }
+    if (data.disk) {
+      T.diskPct = clamp(data.disk.pct || 0, 0, 100);
+      T.diskUsedGb = data.disk.usedGb ?? T.diskUsedGb;
+      T.diskTotalGb = data.disk.totalGb ?? T.diskTotalGb;
+    }
+    if (data.net) {
+      T.rxTarget = Math.max(0, data.net.rxKbs || 0);
+      T.txTarget = Math.max(0, data.net.txKbs || 0);
+      if (data.net.iface) T.iface = data.net.iface;
+    }
+    if (data.temps) {
+      if (data.temps.cpu) T.tempTargets.cpu = data.temps.cpu;
+      if (data.temps.wifi) T.tempTargets.gpu = data.temps.wifi;
+      if (data.temps.nvme) T.tempTargets.nvme = data.temps.nvme;
+      if (data.temps.sys) T.tempTargets.sys = data.temps.sys;
+    }
+    if (Array.isArray(data.load) && data.load.length >= 3) {
+      T.loadTargets = [data.load[0], data.load[1], data.load[2]];
+    }
+    if (Array.isArray(data.procs) && data.procs.length) {
+      T.procs = data.procs.slice(0, 6);
+    }
+    T.cpuHist.shift();
+    T.cpuHist.push(T.cpuTarget);
+    T.loadHist.shift();
+    T.loadHist.push(clamp((T.loadTargets[0] / CORE_COUNT) * 100, 2, 100));
+  };
+}
+
+function stepSimulatedTelemetry(t) {
+  let sum = 0;
+  const globalWave = 14 * Math.sin(t * 0.35) + 18 * Math.max(0, Math.sin(t * 0.19 + 0.8)) ** 2;
+  for (let i = 0; i < CORE_COUNT; i++) {
+    const base = 24 + globalWave + 22 * Math.sin(t * 0.55 + i * 0.9) + 14 * Math.cos(t * 1.25 + i * 1.6);
+    const burst = Math.max(0, Math.sin(t * 0.29 + i * 0.65)) ** 3 * 42;
+    const v = clamp(base + burst + range(-4, 4), 6, 98);
+    T.coreTargets[i] = v;
+    if (v > T.corePeaks[i]) T.corePeaks[i] = v;
+    sum += v;
+  }
+  T.cpuTarget = sum / CORE_COUNT;
+  T.memTarget = 38.4 + 4.5 * Math.sin(t * 0.08);
+  T.memUsedGb = +(T.memTotalGb * T.memTarget / 100).toFixed(2);
+  T.cacheTarget = 64.0 + 3.2 * Math.cos(t * 0.05);
+  T.swapTarget = 4.2 + 0.6 * Math.sin(t * 0.03);
+
+  T.rxTarget = Math.max(15, 410 + 350 * Math.sin(t * 0.6) + 520 * Math.max(0, Math.sin(t * 0.27 + 1.2)) ** 3 + range(-30, 30));
+  T.txTarget = Math.max(8, 105 + 80 * Math.cos(t * 0.52) + 180 * Math.max(0, Math.sin(t * 0.31 + 2.4)) ** 3 + range(-12, 12));
+
+  T.tempTargets.cpu = +(49 + T.cpuTarget * 0.26 + Math.sin(t * 0.2) * 1.4).toFixed(1);
+  T.tempTargets.gpu = +(45 + T.cpuTarget * 0.16 + Math.cos(t * 0.17) * 1.1).toFixed(1);
+  T.tempTargets.nvme = +(36.2 + Math.sin(t * 0.09) * 0.7).toFixed(1);
+  T.tempTargets.sys = +(38.4 + Math.cos(t * 0.11) * 0.6).toFixed(1);
+
+  const l1 = +(0.48 + (T.cpuTarget / 100) * 2.4).toFixed(2);
+  const l5 = +(lerp(T.loadTargets[1], l1, 0.15)).toFixed(2);
+  const l15 = +(lerp(T.loadTargets[2], l5, 0.08)).toFixed(2);
+  T.loadTargets = [l1, l5, l15];
+
+  T.cpuHist.shift();
+  T.cpuHist.push(T.cpuTarget);
+  T.loadHist.shift();
+  T.loadHist.push(clamp((l1 / 4) * 100, 4, 96));
+
+  const names = ['hyprland', 'quickshell', 'livewall.py', 'ghostty', 'chromium', 'btop'];
+  const mems = [2.8, 3.9, 1.6, 1.9, 8.4, 0.8];
+  T.procs = names.map((name, i) => ({
+    pid: 1701 + i * 512,
+    name,
+    cpu: +(clamp(T.coreTargets[i % CORE_COUNT] * (0.28 - i * 0.035), 0.5, 45)).toFixed(1),
+    mem: mems[i],
+  })).sort((a, b) => b.cpu - a.cpu);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-rendered Static LCARS Frame (Swept Elbows, Sidebar Pads, Sub-Headers)
+// ---------------------------------------------------------------------------
+function prerender() {
+  PS = Math.min(2, Math.max(0.5, LW.view.scale || 1));
+  const [c, g] = mk(VW, VH);
+
+  // Pure TNG Okudagram pitch-black background
+  g.fillStyle = P.bg;
+  g.fillRect(0, 0, VW, VH);
+
+  const X_L = 44, X_R = VW - 44;
+  const W_SIDE = 132;
+  const H_BAR = 26;
+  const R_OUT = 52, R_IN = 22;
+
+  // =========================================================================
+  // 1. TOP FRAME (y = 42..534) — Upper Left & Right Swept Elbows
+  // =========================================================================
+  // Top-left swept elbow (Amber)
+  drawElbow(g, X_L, 42, 310, 118, W_SIDE, H_BAR, R_OUT, R_IN, 'left', 'top', P.amber);
+  lcarsText(g, 'LCARS 47108', X_L + W_SIDE - 10, 142, 16, '#000', 'right');
+
+  // Top horizontal segmented bar segments (x = 360 .. 1245)
+  drawCapBar(g, 360, 42, 165, H_BAR, P.peach, false, false);
+  drawCapBar(g, 531, 42, 230, H_BAR, P.periwinkle, false, false);
+  drawCapBar(g, 767, 42, 130, H_BAR, P.lilac, false, true);
+
+  // Main LCARS Header Title in the top cutout (x = 912 .. 1545)
+  lcarsText(g, 'MAIN ENGINEERING // TELEMETRY ACCESS', 914, 55, 31, P.amber, 'left', 0.76);
+
+  // Top-right pill cap & swept elbow (Periwinkle)
+  drawCapBar(g, 1555, 42, 95, H_BAR, P.peach, true, false);
+  drawElbow(g, 1656, 42, X_R - 1656, 118, W_SIDE, H_BAR, R_OUT, R_IN, 'right', 'top', P.periwinkle);
+  lcarsText(g, '01-1701D', X_R - 12, 142, 16, '#000', 'right');
+
+  // Left Upper Sidebar Stacked Pads (y = 166 .. 462)
+  const leftUpperPads = [
+    [68, P.peach, '01-4092'],
+    [68, P.tan, '02-8814'],
+    [76, P.lilac, '03-3105'],
+    [68, P.periwinkle, '04-7740'],
+  ];
+  let py = 166;
+  for (const [ph, col, label] of leftUpperPads) {
+    g.fillStyle = col;
+    g.fillRect(X_L, py, W_SIDE, ph);
+    lcarsText(g, label, X_L + W_SIDE - 10, py + ph - 14, 15, '#000', 'right');
+    py += ph + 6;
+  }
+
+  // Right Upper Sidebar Stacked Pads (y = 166 .. 462)
+  const rightUpperPads = [
+    [68, P.lilac, '09-5521'],
+    [76, P.amber, '10-2048'],
+    [68, P.peach, '11-9012'],
+    [68, P.tan, '12-6634'],
+  ];
+  py = 166;
+  for (const [ph, col, label] of rightUpperPads) {
+    g.fillStyle = col;
+    g.fillRect(X_R - W_SIDE, py, W_SIDE, ph);
+    lcarsText(g, label, X_R - 12, py + ph - 14, 15, '#000', 'right');
+    py += ph + 6;
+  }
+
+  // =========================================================================
+  // 2. CENTER HORIZONTAL DIVIDER BRIDGE (y = 468..556)
+  // =========================================================================
+  // Upper-half closing elbows (sweeping into the center divider at y = 468..508)
+  drawElbow(g, X_L, 468, 420, 42, W_SIDE, 18, 36, 16, 'left', 'bottom', P.amber);
+  drawCapBar(g, 470, 492, 240, 18, P.peach, false, false);
+  drawCapBar(g, 716, 492, 195, 18, P.periwinkle, false, true);
+
+  drawCapBar(g, 965, 492, 210, 18, P.lilac, true, false);
+  drawCapBar(g, 1181, 492, 260, 18, P.amber, false, false);
+  drawElbow(g, 1447, 468, X_R - 1447, 42, W_SIDE, 18, 36, 16, 'right', 'bottom', P.peach);
+
+  // Lower-half opening elbows (sweeping down from the center divider at y = 516..556)
+  drawElbow(g, X_L, 516, 420, 42, W_SIDE, 18, 36, 16, 'left', 'top', P.lilac);
+  drawCapBar(g, 470, 516, 180, 18, P.periwinkle, false, false);
+  drawCapBar(g, 656, 516, 255, 18, P.amber, false, true);
+
+  drawCapBar(g, 965, 516, 285, 18, P.peach, true, false);
+  drawCapBar(g, 1256, 516, 185, 18, P.periwinkle, false, false);
+  drawElbow(g, 1447, 516, X_R - 1447, 42, W_SIDE, 18, 36, 16, 'right', 'top', P.amber);
+
+  // =========================================================================
+  // 3. BOTTOM FRAME (y = 564..1038) — Lower Pads & Bottom Swept Elbows
+  // =========================================================================
+  const leftLowerPads = [
+    [82, P.periwinkle, '05-EPS1'],
+    [82, P.amber, '06-THRM'],
+    [82, P.peach, '07-WAVE'],
+    [82, P.tan, '08-SYNC'],
+  ];
+  py = 564;
+  for (const [ph, col, label] of leftLowerPads) {
+    g.fillStyle = col;
+    g.fillRect(X_L, py, W_SIDE, ph);
+    lcarsText(g, label, X_L + W_SIDE - 10, py + ph - 14, 15, '#000', 'right');
+    py += ph + 6;
+  }
+
+  const rightLowerPads = [
+    [82, P.peach, '13-COMM'],
+    [82, P.lilac, '14-SUBS'],
+    [82, P.periwinkle, '15-PROC'],
+    [82, P.amber, '16-EXEC'],
+  ];
+  py = 564;
+  for (const [ph, col, label] of rightLowerPads) {
+    g.fillStyle = col;
+    g.fillRect(X_R - W_SIDE, py, W_SIDE, ph);
+    lcarsText(g, label, X_R - 12, py + ph - 14, 15, '#000', 'right');
+    py += ph + 6;
+  }
+
+  // Bottom-left swept elbow
+  drawElbow(g, X_L, 916, 360, 118, W_SIDE, H_BAR, R_OUT, R_IN, 'left', 'bottom', P.tan);
+  lcarsText(g, 'SEC 04-A', X_L + W_SIDE - 10, 934, 16, '#000', 'right');
+
+  // Bottom horizontal bar segments
+  drawCapBar(g, 410, 1008, 220, H_BAR, P.amber, false, false);
+  drawCapBar(g, 636, 1008, 175, H_BAR, P.peach, false, true);
+
+  lcarsText(g, 'USS ENTERPRISE // NCC-1701-D // OKUDAGRAM TELEMETRY', 828, 1021, 24, P.peach, 'left', 0.76);
+
+  drawCapBar(g, 1415, 1008, 165, H_BAR, P.lilac, true, false);
+  drawElbow(g, 1586, 916, X_R - 1586, 118, W_SIDE, H_BAR, R_OUT, R_IN, 'right', 'bottom', P.periwinkle);
+  lcarsText(g, 'SYS-NOM', X_R - 12, 934, 16, '#000', 'right');
+
+  // =========================================================================
+  // 4. INTERIOR QUADRANT SUB-HEADERS & LCARSHAIRLINES
+  // =========================================================================
+  // Vertical center divider bar between Left and Right Quadrants
+  g.fillStyle = P.dim;
+  g.beginPath();
+  g.roundRect(934, 180, 8, 290, 4);
+  g.roundRect(934, 560, 8, 426, 4);
+  g.fill();
+
+  // Section header pills inside the 4 quadrants
+  const sectionHeader = (x, y, w, title, code, col1, col2) => {
+    drawCapBar(g, x, y, 86, 20, col1, true, false);
+    lcarsText(g, code, x + 78, y + 10, 14, '#000', 'right');
+    lcarsText(g, title, x + 98, y + 10, 21, col1, 'left', 0.78);
+    const tw = title.length * 9.5 + 112;
+    if (x + tw < x + w) {
+      drawCapBar(g, x + tw, y + 4, w - tw, 12, col2, false, true);
+    }
+  };
+
+  // Top-Left: Isolinear Processor Array
+  sectionHeader(196, 180, 715, 'ISOLINEAR PROCESSOR ARRAY // 8 CORES', 'CPU-08', P.amber, P.peach);
+  // Bottom-Left: EPS Thermal & Rolling Telemetry
+  sectionHeader(196, 560, 715, 'EPS THERMAL CONDUITS & LOAD TRACE', 'THM-60', P.lilac, P.periwinkle);
+  // Top-Right: Warp Core & Memory Bank Allocation
+  sectionHeader(962, 180, 720, 'MATTER-ANTIMATTER CORE & MEMORY BANKS', 'MEM-16', P.periwinkle, P.amber);
+  // Bottom-Right: Subspace Transceiver & Subsystems
+  sectionHeader(962, 560, 720, 'SUBSPACE RX/TX & ACTIVE SUBSYSTEMS', 'SUB-24', P.peach, P.tan);
+
+  L.base = c;
+}
+
+// ---------------------------------------------------------------------------
+// LCARS Segmented Pill-Bar Readout Helper
+// ---------------------------------------------------------------------------
+function drawLcarsBar(ctx, x, y, w, h, pct, segs, palette = 'amber', peakPct = -1) {
+  const r = h / 2;
+  const capW = Math.max(10, h * 0.85);
+  const gap = 3;
+  const innerX = x + capW + gap;
+  const innerW = w - (capW + gap) * 2;
+  const sw = (innerW - gap * (segs - 1)) / segs;
+  const active = (clamp(pct, 0, 100) / 100) * segs;
+  const peakIdx = peakPct >= 0 ? Math.min(segs - 1, Math.floor((clamp(peakPct, 0, 100) / 100) * segs)) : -1;
+
+  // Left rounded pill end-cap (always lit)
+  const capCol = palette === 'blue' ? P.periwinkle : palette === 'lilac' ? P.lilac : P.amber;
+  drawCapBar(ctx, x, y, capW, h, capCol, true, false);
+
+  for (let i = 0; i < segs; i++) {
+    const sx = innerX + i * (sw + gap);
+    const u = i / segs;
+    let col = P.amber;
+    if (palette === 'amber') {
+      col = u > 0.84 ? P.red : u > 0.62 ? P.peach : P.amber;
+    } else if (palette === 'blue') {
+      col = u > 0.82 ? P.amber : u > 0.52 ? P.ice : P.periwinkle;
+    } else if (palette === 'lilac') {
+      col = u > 0.80 ? P.red : u > 0.55 ? P.amber : P.lilac;
+    }
+
+    if (i < Math.floor(active)) {
+      ctx.fillStyle = col;
+      ctx.fillRect(sx, y, sw, h);
+    } else if (i < active) {
+      ctx.fillStyle = P.dim;
+      ctx.fillRect(sx, y, sw, h);
+      ctx.globalAlpha = 0.4 + 0.6 * (active - i);
+      ctx.fillStyle = col;
+      ctx.fillRect(sx, y, sw, h);
+      ctx.globalAlpha = 1;
+    } else if (i === peakIdx && peakIdx > 0) {
+      ctx.fillStyle = P.white;
+      ctx.fillRect(sx, y, sw, h);
+    } else {
+      ctx.fillStyle = palette === 'blue' ? P.dimBlue : P.dim;
+      ctx.fillRect(sx, y, sw, h);
+    }
+  }
+
+  // Right rounded pill end-cap
+  drawCapBar(ctx, x + w - capW, y, capW, h, pct > 90 ? P.red : P.peach, false, true);
+}
+
+// ---------------------------------------------------------------------------
+// Scene Lifecycle
+// ---------------------------------------------------------------------------
+LW.start({
+  init() {
+    // Generate LCARS top numeric data matrix (4 rows x 7 columns of numeric codes)
+    const cols = [P.amber, P.peach, P.periwinkle, P.lilac, P.tan];
+    for (let r = 0; r < 4; r++) {
+      const row = [];
+      for (let c = 0; c < 7; c++) {
+        row.push({
+          val: Math.floor(1000 + rand() * 899999),
+          col: cols[(r + c) % cols.length],
+          hi: rand() < 0.18,
+        });
+      }
+      T.matrixDigits.push(row);
+    }
+
+    for (let i = 0; i < HIST_LEN; i++) {
+      stepSimulatedTelemetry(i * 0.5);
+      T.rxBins[i % NET_BINS] = clamp(T.rxTarget / 1100, 0.08, 0.96);
+      T.txBins[i % NET_BINS] = clamp(T.txTarget / 420, 0.06, 0.92);
+    }
+
+    every(0.45, 0.55, () => {
+      if (!T.live || LW.time - T.lastPushSimTime > 2.5) {
+        T.live = false;
+        stepSimulatedTelemetry(LW.time);
+      }
+      T.rxBins.shift();
+      T.rxBins.push(clamp(Math.log10(1 + T.rxKbs) / 3.4, 0.08, 0.98));
+      T.txBins.shift();
+      T.txBins.push(clamp(Math.log10(1 + T.txKbs) / 3.0, 0.06, 0.95));
+
+      // Blink/cycle LCARS numeric matrix cells
+      for (const row of T.matrixDigits) {
+        for (const cell of row) {
+          if (rand() < 0.22) cell.val = Math.floor(1000 + rand() * 899999);
+          if (rand() < 0.15) cell.hi = !cell.hi;
+        }
+      }
+      T.activePad = (T.activePad + 1) % 8;
+    });
+
+    // Automatic localhost HTTP polling in browser / OBS mode (same endpoint as Aegis)
+    const urlParams = new URLSearchParams(location.search);
+    if (!urlParams.has('still') && urlParams.get('telemetry') !== '0') {
+      const endpoint = urlParams.get('telemetry') || 'http://127.0.0.1:19845/stats';
+      let backoff = 0;
+      const pollLocalAgent = async () => {
+        if (T.directPush || (window.livewall && window.livewall.paused)) return;
+        if (backoff > 0) { backoff--; return; }
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 650);
+        try {
+          const res = await fetch(endpoint, { signal: ctrl.signal, cache: 'no-store' });
+          clearTimeout(tid);
+          if (res.ok) {
+            const data = await res.json();
+            if (window.livewall && window.livewall.pushStats) {
+              window.livewall.pushStats(data, true);
+            }
+            backoff = 0;
+          } else {
+            backoff = 8;
+          }
+        } catch (_e) {
+          clearTimeout(tid);
+          backoff = 8;
+        }
+      };
+      setTimeout(pollLocalAgent, 150);
+      setInterval(pollLocalAgent, 1000);
+    }
+  },
+  resize() { prerender(); },
+  update(dt, t) {
+    const k = clamp(dt * 5.5, 0, 1);
+    T.cpu = lerp(T.cpu, T.cpuTarget, k);
+    for (let i = 0; i < CORE_COUNT; i++) {
+      T.cores[i] = lerp(T.cores[i], T.coreTargets[i], k);
+      T.corePeaks[i] = Math.max(T.cores[i], T.corePeaks[i] - dt * 6.5);
+    }
+    T.memPct = lerp(T.memPct, T.memTarget, k);
+    T.cachePct = lerp(T.cachePct, T.cacheTarget, k);
+    T.swapPct = lerp(T.swapPct, T.swapTarget, k);
+    T.rxKbs = lerp(T.rxKbs, T.rxTarget, k);
+    T.txKbs = lerp(T.txKbs, T.txTarget, k);
+
+    T.temps.cpu = lerp(T.temps.cpu, T.tempTargets.cpu, k);
+    T.temps.gpu = lerp(T.temps.gpu, T.tempTargets.gpu, k);
+    T.temps.nvme = lerp(T.temps.nvme, T.tempTargets.nvme, k);
+    T.temps.sys = lerp(T.temps.sys, T.tempTargets.sys, k);
+
+    for (let i = 0; i < 3; i++) T.load[i] = lerp(T.load[i], T.loadTargets[i], k);
+
+    // Warp core pulse speed scales with CPU utilization
+    T.warpPhase = (T.warpPhase + dt * (1.2 + (T.cpu / 100) * 2.8)) % 1;
+  },
+  draw(ctx, t) {
+    ctx.drawImage(L.base, 0, 0, VW, VH);
+
+    drawTopBridge(ctx, t);
+    drawTopLeftCpu(ctx, t);
+    drawBottomLeftThermal(ctx, t);
+    drawTopRightWarpAndMem(ctx, t);
+    drawBottomRightNetAndProcs(ctx, t);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Top Sub-Header: Stardate, System Status & Classic LCARS Numeric Matrix
+// ---------------------------------------------------------------------------
+function drawTopBridge(ctx, t) {
+  const up = Math.floor(T.uptimeBase + t);
+  const d = Math.floor(up / 86400);
+  const h = String(Math.floor((up % 86400) / 3600)).padStart(2, '0');
+  const m = String(Math.floor((up % 3600) / 60)).padStart(2, '0');
+  const s = String(up % 60).padStart(2, '0');
+  const stardate = (47634.4 + (t / 60) * 0.1).toFixed(1);
+
+  // Left status block (x = 196..890, y = 84..160)
+  lcarsText(ctx, `STARDATE ${stardate}`, 196, 96, 26, P.amber, 'left', 0.78);
+  lcarsText(ctx, `UPTIME ${d}D ${h}:${m}:${s}`, 425, 96, 26, P.peach, 'left', 0.78);
+  lcarsText(ctx, `NODE // ${T.host}`, 196, 126, 20, P.periwinkle, 'left', 0.78);
+  lcarsText(ctx, `KERNEL // LINUX ${T.kernel}`, 425, 126, 20, P.lilac, 'left', 0.78);
+
+  // Telemetry link indicator pill
+  drawCapBar(ctx, 680, 84, 230, 24, T.live ? P.amber : P.periwinkle, true, true);
+  lcarsText(ctx, T.live ? 'LIVE TELEMETRY LINK' : 'HOLODECK SIM-LINK', 795, 96, 16, '#000', 'center', 0.78);
+
+  drawCapBar(ctx, 680, 116, 230, 22, P.peach, true, true);
+  lcarsText(ctx, `CPU ${T.cpu.toFixed(1)}%  •  MEM ${T.memPct.toFixed(1)}%`, 795, 127, 15, '#000', 'center', 0.78);
+
+  // Right LCARS blinking numeric data matrix (x = 962..1640, y = 80..158)
+  const mx0 = 962, my0 = 84;
+  ctx.font = `bold 14px ${F_MONO}`;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let r = 0; r < T.matrixDigits.length; r++) {
+    const row = T.matrixDigits[r];
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      ctx.fillStyle = cell.hi ? P.white : cell.col;
+      ctx.fillText(String(cell.val), mx0 + (c + 1) * 94, my0 + r * 19);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Top-Left Quadrant: 8 Isolinear Processor Core Bars + Harmonic Field Columns
+// ---------------------------------------------------------------------------
+function drawTopLeftCpu(ctx, t) {
+  const x0 = 196, y0 = 214;
+  const barW = 420;
+
+  for (let i = 0; i < CORE_COUNT; i++) {
+    const ry = y0 + i * 32;
+    const val = T.cores[i];
+    const peak = T.corePeaks[i];
+
+    // Core ID pill tag
+    const tagCol = val > 75 ? P.red : i % 2 === 0 ? P.amber : P.peach;
+    drawCapBar(ctx, x0, ry, 62, 20, tagCol, true, false);
+    lcarsText(ctx, `C-0${i}`, x0 + 54, ry + 10, 15, '#000', 'right');
+
+    // Segmented LCARS bar readout
+    drawLcarsBar(ctx, x0 + 68, ry, barW, 20, val, 24, 'amber', peak);
+
+    // Numeric percentage readout
+    lcarsText(ctx, `${val.toFixed(1)}%`, x0 + 68 + barW + 58, ry + 10, 20, val > 75 ? P.red : P.text, 'right', 0.80);
+  }
+
+  // Right side of Top-Left quadrant (x = 762..910): Vertical Harmonic Field Equalizer
+  const vx0 = 764, vy0 = 214, vw = 146, vh = 248;
+  ctx.strokeStyle = P.amber;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(vx0, vy0, vw, vh);
+
+  const cols = 6, cGap = 5;
+  const cw = (vw - 16 - cGap * (cols - 1)) / cols;
+  const vSegs = 14, sGap = 3;
+  const sh = (vh - 34 - sGap * (vSegs - 1)) / vSegs;
+  const pal = [P.amber, P.peach, P.periwinkle, P.lilac, P.amber, P.peach];
+
+  for (let c = 0; c < cols; c++) {
+    const bx = vx0 + 8 + c * (cw + cGap);
+    const lvl = ((T.cores[c % CORE_COUNT] / 100) * 0.7 + 0.25 * Math.abs(Math.sin(t * 2.2 + c))) * vSegs;
+    for (let s = 0; s < vSegs; s++) {
+      const by = vy0 + vh - 12 - (s + 1) * sh - s * sGap;
+      ctx.fillStyle = s < lvl ? (s >= 11 ? P.red : pal[c]) : P.dim;
+      ctx.fillRect(bx, by, cw, sh);
+    }
+  }
+  lcarsText(ctx, 'HARMONIC FLUX', vx0 + vw / 2, vy0 + 12, 14, P.peach, 'center');
+}
+
+// ---------------------------------------------------------------------------
+// Bottom-Left Quadrant: EPS Thermal Conduit Bars & Rolling Sensor Trace
+// ---------------------------------------------------------------------------
+function drawBottomLeftThermal(ctx, t) {
+  const x0 = 196, y0 = 594;
+  const sensors = [
+    ['CPU CORE', T.temps.cpu, 30, 95, P.amber, 'amber'],
+    ['SUBSPACE', T.temps.gpu, 25, 85, P.periwinkle, 'blue'],
+    ['ISOLINEAR', T.temps.nvme, 25, 75, P.lilac, 'lilac'],
+    ['EPS MANIFOLD', T.temps.sys, 25, 80, P.peach, 'amber'],
+  ];
+
+  for (let i = 0; i < sensors.length; i++) {
+    const [label, temp, minT, maxT, col, scheme] = sensors[i];
+    const ry = y0 + i * 32;
+    const pct = ((temp - minT) / (maxT - minT)) * 100;
+
+    drawCapBar(ctx, x0, ry, 108, 20, col, true, false);
+    lcarsText(ctx, label, x0 + 100, ry + 10, 14, '#000', 'right');
+
+    drawLcarsBar(ctx, x0 + 114, ry, 520, 20, pct, 26, scheme);
+    lcarsText(ctx, `${temp.toFixed(1)} C`, x0 + 712, ry + 10, 20, temp > 75 ? P.red : P.text, 'right', 0.80);
+  }
+
+  // Rolling 60s LCARS Sensor Oscilloscope (y = 732..988)
+  const gx = x0, gy = 732, gw = 714, gh = 254;
+  ctx.strokeStyle = P.periwinkle;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(gx, gy, gw, gh);
+
+  // LCARS internal coordinate grid hairlines
+  ctx.strokeStyle = 'rgba(255, 153, 0, 0.18)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < 4; i++) {
+    const ly = gy + (gh * i) / 4;
+    ctx.moveTo(gx, ly); ctx.lineTo(gx + gw, ly);
+  }
+  for (let i = 1; i < 8; i++) {
+    const lx = gx + (gw * i) / 8;
+    ctx.moveTo(lx, gy); ctx.lineTo(lx, gy + gh);
+  }
+  ctx.stroke();
+
+  const plotWave = (arr, col, fillAlpha) => {
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i++) {
+      const px = gx + (i / (arr.length - 1)) * gw;
+      const py = gy + gh - (clamp(arr[i], 0, 100) / 100) * (gh - 34) - 8;
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+
+    ctx.lineTo(gx + gw, gy + gh);
+    ctx.lineTo(gx, gy + gh);
+    ctx.closePath();
+    ctx.fillStyle = fillAlpha;
+    ctx.fill();
+  };
+
+  plotWave(T.loadHist, P.periwinkle, 'rgba(153, 153, 255, 0.16)');
+  plotWave(T.cpuHist, P.amber, 'rgba(255, 153, 0, 0.22)');
+
+  // Sweeping vertical sensor line inside oscilloscope
+  const sx = gx + ((t * 95) % gw);
+  ctx.strokeStyle = P.peach;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(sx, gy);
+  ctx.lineTo(sx, gy + gh);
+  ctx.stroke();
+
+  // Oscilloscope header pills
+  drawCapBar(ctx, gx + 12, gy + 10, 175, 20, P.amber, true, true);
+  lcarsText(ctx, `CPU UTIL // ${T.cpu.toFixed(1)}%`, gx + 100, gy + 20, 14, '#000', 'center');
+
+  drawCapBar(ctx, gx + 196, gy + 10, 205, 20, P.periwinkle, true, true);
+  lcarsText(ctx, `LOAD QUEUE // ${T.load[0].toFixed(2)} (${T.tasks})`, gx + 298, gy + 20, 14, '#000', 'center');
+}
+
+// ---------------------------------------------------------------------------
+// Top-Right Quadrant: TNG Warp Core Schematic & Memory / Storage Banks
+// ---------------------------------------------------------------------------
+function drawTopRightWarpAndMem(ctx, t) {
+  // 1. Left side of Top-Right Quadrant (x = 962..1230, y = 212..474):
+  //    Animated TNG Matter/Antimatter Warp Core Reaction Chamber
+  const wx = 1096, wy = 336;
+
+  // Outer LCARS schematic bracket frame
+  ctx.strokeStyle = P.periwinkle;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(962, 214, 268, 256);
+
+  // Rotating warp field containment rings around central chamber
+  ctx.save();
+  ctx.translate(wx, wy);
+  ctx.strokeStyle = 'rgba(153, 153, 255, 0.38)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 108, 38, 0, 0, TAU);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255, 153, 0, 0.45)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 82, 24, 0, 0, TAU);
+  ctx.stroke();
+  ctx.restore();
+
+  // Vertical Warp Core column (5 upper + 5 lower magnetic constriction segments converging on center)
+  const segCount = 5;
+  const colW = 54, segH = 10, segGap = 3.5;
+  for (let i = 0; i < segCount; i++) {
+    const wave = (i / segCount + T.warpPhase) % 1;
+    const bright = Math.exp(-(((wave - 0.5) / 0.25) ** 2));
+    const col = bright > 0.55 ? P.white : bright > 0.25 ? P.ice : P.periwinkle;
+
+    // Upper matter injector segment
+    const uy = wy - 20 - (i + 1) * (segH + segGap);
+    drawCapBar(ctx, wx - colW / 2, uy, colW, segH, col, true, true);
+
+    // Lower antimatter injector segment
+    const ly = wy + 20 + i * (segH + segGap);
+    drawCapBar(ctx, wx - colW / 2, ly, colW, segH, col, true, true);
+  }
+
+  // Central Dilithium Articulation Chamber
+  drawCapBar(ctx, wx - 42, wy - 16, 84, 32, P.amber, true, true);
+  drawCapBar(ctx, wx - 30, wy - 9, 60, 18, P.white, true, true);
+
+  lcarsText(ctx, 'WARP CORE', 974, 232, 16, P.amber, 'left');
+  lcarsText(ctx, `${(1240 + T.cpu * 14).toFixed(0)} COCHRANES`, 1218, 232, 16, P.peach, 'right');
+  lcarsText(ctx, 'DILITHIUM MATRIX // LOCKED', 974, 454, 15, P.periwinkle, 'left');
+
+  // 2. Right side of Top-Right Quadrant (x = 1248..1732, y = 214..474):
+  //    Memory, Cache, Swap & Storage Bar Readouts + Isolinear Chip Matrix
+  const mx = 1248, mw = 484;
+  const memBars = [
+    ['MAIN MEMORY', `${T.memUsedGb.toFixed(2)} / ${T.memTotalGb.toFixed(1)} GB (${T.memPct.toFixed(1)}%)`, T.memPct, 'blue'],
+    ['ISOLINEAR CACHE', `${(T.memTotalGb * T.cachePct / 100).toFixed(1)} GB BUFFERED (${T.cachePct.toFixed(1)}%)`, T.cachePct, 'amber'],
+    ['ROOT STORAGE /', `${T.diskUsedGb.toFixed(1)} / ${T.diskTotalGb.toFixed(1)} GB (${T.diskPct.toFixed(1)}%)`, T.diskPct, 'lilac'],
+  ];
+
+  let my = 216;
+  for (const [label, sub, pct, scheme] of memBars) {
+    lcarsText(ctx, label, mx, my + 8, 18, P.amber, 'left');
+    lcarsText(ctx, sub, mx + mw, my + 8, 17, P.text, 'right');
+    drawLcarsBar(ctx, mx, my + 22, mw, 20, pct, 24, scheme);
+    my += 56;
+  }
+
+  // Isolinear Optical Memory Bank Grid (2 rows x 12 pill modules)
+  lcarsText(ctx, 'ISOLINEAR OPTICAL MEMORY BANKS // SECTORS 00-23', mx, my + 10, 16, P.peach, 'left');
+  const mCols = 12, mGap = 5;
+  const cellW = (mw - mGap * (mCols - 1)) / mCols;
+  const usedBanks = Math.round((T.memPct / 100) * 24);
+  const cacheBanks = Math.min(24 - usedBanks, Math.round((T.cachePct / 100) * 12));
+
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < mCols; c++) {
+      const idx = r * mCols + c;
+      const bx = mx + c * (cellW + mGap);
+      const by = my + 24 + r * 24;
+      let col = P.dim;
+      if (idx < usedBanks) col = P.amber;
+      else if (idx < usedBanks + cacheBanks) col = P.periwinkle;
+      drawCapBar(ctx, bx, by, cellW, 18, col, true, true);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bottom-Right Quadrant: Subspace Network Spectrum & Active Process Table
+// ---------------------------------------------------------------------------
+function drawBottomRightNetAndProcs(ctx, t) {
+  const x0 = 962, w = 770;
+  const fmtRate = (kbs) => (kbs >= 1024 ? `${(kbs / 1024).toFixed(2)} MB/S` : `${kbs.toFixed(1)} KB/S`);
+
+  // 1. Subspace Transceiver Duplex Spectrum (y = 592..758)
+  drawCapBar(ctx, x0, 594, 250, 22, P.amber, true, true);
+  lcarsText(ctx, `RX DOWNLINK // ${fmtRate(T.rxKbs)}`, x0 + 125, 605, 15, '#000', 'center');
+
+  drawCapBar(ctx, x0 + 260, 594, 250, 22, P.periwinkle, true, true);
+  lcarsText(ctx, `TX UPLINK // ${fmtRate(T.txKbs)}`, x0 + 385, 605, 15, '#000', 'center');
+
+  drawCapBar(ctx, x0 + 520, 594, 250, 22, P.peach, true, true);
+  lcarsText(ctx, `TRANSCEIVER // ${T.iface.toUpperCase()}`, x0 + 645, 605, 15, '#000', 'center');
+
+  // 24-column LCARS Bi-Directional Spectrum Equalizer
+  const sx0 = x0, sy0 = 626, sw = w, sh = 128;
+  const midY = sy0 + sh / 2;
+  ctx.strokeStyle = P.amber;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(sx0, sy0, sw, sh);
+
+  ctx.strokeStyle = P.peach;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(sx0, midY);
+  ctx.lineTo(sx0 + sw, midY);
+  ctx.stroke();
+
+  const bCols = NET_BINS, bGap = 5;
+  const bWidth = (sw - 20 - bGap * (bCols - 1)) / bCols;
+  const halfSegs = 6, sGap = 2.5;
+  const segH = (sh / 2 - 10 - sGap * (halfSegs - 1)) / halfSegs;
+
+  for (let i = 0; i < bCols; i++) {
+    const bx = sx0 + 10 + i * (bWidth + bGap);
+    const rxAct = T.rxBins[i] * halfSegs;
+    const txAct = T.txBins[i] * halfSegs;
+    for (let s = 0; s < halfSegs; s++) {
+      const by = midY - 4 - (s + 1) * segH - s * sGap;
+      ctx.fillStyle = s < rxAct ? (s >= 4 ? P.peach : P.amber) : P.dim;
+      ctx.fillRect(bx, by, bWidth, segH);
+    }
+    for (let s = 0; s < halfSegs; s++) {
+      const by = midY + 4 + s * (segH + sGap);
+      ctx.fillStyle = s < txAct ? (s >= 4 ? P.lilac : P.periwinkle) : P.dimBlue;
+      ctx.fillRect(bx, by, bWidth, segH);
+    }
+  }
+
+  // 2. Active Subsystems Process Table (y = 772..988)
+  let py = 772;
+  const rowCols = [P.amber, P.peach, P.periwinkle, P.lilac, P.tan, P.amber];
+  for (let i = 0; i < Math.min(6, T.procs.length); i++) {
+    const p = T.procs[i];
+    const col = rowCols[i];
+
+    // Left PID pill
+    drawCapBar(ctx, x0, py, 82, 24, col, true, false);
+    lcarsText(ctx, String(p.pid), x0 + 74, py + 12, 16, '#000', 'right');
+
+    // Subsystem Name block
+    ctx.fillStyle = 'rgba(255, 153, 0, 0.10)';
+    ctx.fillRect(x0 + 88, py, 210, 24);
+    lcarsText(ctx, p.name, x0 + 100, py + 12, 18, col, 'left');
+
+    // CPU% and MEM% readouts
+    lcarsText(ctx, `CPU ${Number(p.cpu).toFixed(1)}%`, x0 + 388, py + 12, 18, P.text, 'right');
+    lcarsText(ctx, `MEM ${Number(p.mem).toFixed(1)}%`, x0 + 482, py + 12, 18, P.peach, 'right');
+
+    // Inline LCARS Segmented Bar Readout
+    drawLcarsBar(
+      ctx,
+      x0 + 496,
+      py + 2,
+      w - 496,
+      20,
+      clamp(p.cpu * 2.5 + p.mem * 3, 8, 100),
+      14,
+      i % 2 === 0 ? 'amber' : 'blue'
+    );
+
+    py += 34;
+  }
+}
+</script>
+</body>
+</html>

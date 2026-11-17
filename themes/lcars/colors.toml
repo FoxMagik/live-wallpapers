@@ -1,0 +1,37 @@
+mode = "dark"
+
+# LCARS — Star Trek TNG 24th-century Okudagram palette: amber, peach, periwinkle & lilac on black
+accent = "#ff9900"
+selection = "#332211"
+muted = "#997755"
+
+background = "#050403"
+dark_background = "#020202"
+darker_background = "#000000"
+lighter_background = "#17110b"
+
+foreground = "#ffdd99"
+dark_foreground = "#aa8855"
+light_foreground = "#ffcc99"
+bright_foreground = "#fff4e0"
+
+red = "#dd4444"
+yellow = "#ffaa22"
+orange = "#ff9900"
+green = "#99cc99"
+cyan = "#99ccff"
+blue = "#9999ff"
+magenta = "#cc99cc"
+brown = "#996644"
+
+bright_red = "#ff6666"
+bright_yellow = "#ffcc66"
+bright_green = "#bbeeaa"
+bright_cyan = "#bbddff"
+bright_blue = "#bbbbff"
+bright_magenta = "#e0b3e0"
+
+hyprland_active_border = "rgba(ff9900ee) rgba(9999ffee) 45deg"
+hyprland_inactive_border = "rgba(332211aa)"
+active_border_color = "#ff9900"
+active_tab_background = "#cc6699"

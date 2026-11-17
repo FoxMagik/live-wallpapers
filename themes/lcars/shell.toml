@@ -1,0 +1,133 @@
+# LCARS — Starfleet Okudagram shell surface overrides for Omarchy
+
+[bar]
+background       = "#050403"
+background-alpha = 0.94
+text             = "#ffdd99"
+active           = "#ff9900"
+scale-with-font  = true
+size-horizontal  = 28
+size-vertical    = 30
+
+[hyprland]
+active-border            = "rgba(ff9900ee) rgba(9999ffee) 45deg"
+active-border-foreground = "rgba(ff9900ee) rgba(ffcc99ee) 45deg"
+
+[controls]
+normal-color        = "#ffdd99"
+normal-fill-alpha   = 0.08
+normal-border       = "#ff9900"
+normal-border-width = 1
+normal-border-alpha = 0.55
+
+hover-cursor-color        = "#ff9900"
+hover-cursor-fill-alpha   = 0.16
+hover-cursor-border       = "#ffcc99"
+hover-cursor-border-width = 1
+hover-cursor-border-alpha = 0.85
+
+focus-color        = "#ff9900"
+focus-fill-alpha   = 0.16
+focus-border       = "#ff9900"
+focus-border-width = 1
+focus-border-alpha = 0.90
+
+selected-color        = "#000000"
+selected-fill-alpha   = 0.90
+selected-border       = "#ff9900"
+selected-border-width = 0
+selected-border-alpha = 1.0
+
+pressed-fill-alpha   = 0.30
+selection-fill-alpha = 0.40
+
+[spacing]
+scale = 1.0
+scale-with-font = true
+
+[font]
+base-size = 12
+
+[popups]
+background       = "#050403"
+background-alpha = 0.96
+text             = "#ffdd99"
+border           = "hyprland.active-border"
+border-alpha     = 1.0
+border-width     = 2
+
+[tooltip]
+background       = "#050403"
+background-alpha = 0.98
+text             = "#ffdd99"
+border           = "hyprland.active-border"
+border-alpha     = 1.0
+
+[notifications]
+background       = "#050403"
+background-alpha = 0.96
+text             = "#ffdd99"
+border           = "hyprland.active-border"
+border-alpha     = 1.0
+border-width     = 2
+countdown        = "#ff9900"
+
+[launcher]
+background                = "#050403"
+background-alpha          = 0.95
+text                      = "#ffdd99"
+border                    = "hyprland.active-border"
+border-alpha              = 1.0
+scrim                     = "#000000"
+scrim-alpha               = 0.6
+selected-background       = "#ff9900"
+selected-background-alpha = 0.22
+selected-text             = "#ffcc99"
+selected-border           = "hyprland.active-border"
+selected-border-alpha     = 0.75
+
+[menu]
+background                = "#050403"
+background-alpha          = 0.96
+text                      = "#ffdd99"
+border                    = "hyprland.active-border"
+border-alpha              = 1.0
+scrim                     = "#000000"
+scrim-alpha               = 0.6
+selected-background       = "#ff9900"
+selected-background-alpha = 0.22
+selected-text             = "#ffcc99"
+selected-border           = "hyprland.active-border"
+selected-border-alpha     = 0.75
+
+[polkit]
+background       = "#050403"
+background-alpha = 0.96
+text             = "#ffdd99"
+text-error       = "#dd4444"
+border           = "hyprland.active-border"
+border-error     = "#dd4444"
+border-alpha     = 1.0
+scrim            = "#000000"
+scrim-alpha      = 0.6
+accent           = "#ff9900"
+
+[lock]
+background       = "#050403"
+background-alpha = 0.88
+text             = "#ffdd99"
+placeholder      = "#997755"
+text-error       = "#dd4444"
+border           = "hyprland.active-border"
+border-active    = "hyprland.active-border"
+border-error     = "#dd4444"
+border-alpha     = 1.0
+selection        = "#ff9900"
+selection-alpha  = 0.45
+
+[image-picker]
+text                    = "#ffdd99"
+selected-border         = "#ff9900"
+selected-border-alpha   = 1.0
+unselected-border       = "#9999ff"
+unselected-border-alpha = 0.40
