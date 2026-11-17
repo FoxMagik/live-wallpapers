@@ -120,19 +120,23 @@ const LW = (() => {
 })();
 // ============================== end runtime =================================
 
-// ---- scene: Carbon ------------------------------------------------------------
-// Carbon-fiber twill weave with a slowly drifting specular sheen, engraved
-// circuit traces that carry electric-blue pulses at random intervals, a soft
-// ambient LED strip, rare diagonal light sweeps and a few drifting motes.
+// ---- scene: Carbon ---------------------------------------------------------
+// Precision 2x2 twill carbon-fiber chassis framed by chamfered dark-titanium
+// armor plates, hex-mesh intake vents with deep blue underglow, and an
+// intricate engraved fiber-optic circuit network carrying electric-blue &
+// ice-cyan telemetry pulses.
 const { VW, VH, rand, range, pick, after, every } = LW;
+const TAU = Math.PI * 2;
 
-const BLUE = [74, 140, 255];          // LED blue
-const CORE = [190, 220, 255];         // hot core
+const BLUE = [74, 140, 255];          // primary LED blue (#4a8cff)
+const CYAN = [79, 195, 232];          // accent cyan (#4fc3e8)
+const CORE = [215, 238, 255];         // white-hot core
 
-// texture-only PRNG so resizes never disturb the seeded event sequence
 function texRng(s) {
+  s >>>= 0;
   return () => {
-    s = (s + 0x6D2B79F5) >>> 0; let t = s;
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -140,57 +144,37 @@ function texRng(s) {
 }
 function mkCanvas(w, h) {
   const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+  c.width = Math.max(1, Math.round(w));
+  c.height = Math.max(1, Math.round(h));
   return c;
 }
 
-const S = { // pre-rendered layers
+const S = {
   k: 1, base: null, hiH: null, hiV: null, tmp: null, tctx: null,
-  glow: null, strip: null,
+  glow: null, glowCyan: null, strip: null,
 };
 const world = {
   buses: [], traces: [], pulses: [], motes: [], sweep: null, scan: null,
-  sheen: [], stripY: 842, stripX0: 420, stripX1: 1480,
+  sheen: [], stripY: 856, stripX0: 410, stripX1: 1510,
 };
 
-// ---------------------------------------------------------------- layout ----
-const DIRS = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]]
-  .map(([x, y]) => { const l = Math.hypot(x, y); return [x / l, y / l]; });
-
-function makeBus(x, y, h0, maxLen, region) {
-  const pts = [[x, y]];
-  let h = h0, total = 0;
-  const nseg = 3 + Math.floor(rand() * 3);
-  for (let i = 0; i < nseg && total < maxLen; i++) {
-    if (i > 0) {
-      if (h === h0) h = (h0 + (rand() < 0.5 ? 1 : 7)) % 8;
-      else if (rand() < 0.75) h = h0;
-    }
-    const len = i === 0 ? range(170, 320) : range(70, 230);
-    const [px, py] = pts[pts.length - 1];
-    let nx = px + DIRS[h][0] * len, ny = py + DIRS[h][1] * len;
-    if (nx < region[0] || nx > region[2] || ny < region[1] || ny > region[3]) {
-      if (i < 2) { h = h0; nx = px + DIRS[h][0] * len; ny = py + DIRS[h][1] * len; }
-      else break;
-    }
-    pts.push([nx, ny]); total += len;
-  }
-  return pts;
-}
-
+// ---------------------------------------------------------------------------
+// Curated, architectural circuit & bus topology (symmetrical + dynamic balance)
+// ---------------------------------------------------------------------------
 function offsetPolyline(pts, off) {
   const n = pts.length, out = [];
   const nrm = [];
   for (let i = 0; i < n - 1; i++) {
     const dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1];
-    const l = Math.hypot(dx, dy); nrm.push([-dy / l, dx / l]);
+    const l = Math.hypot(dx, dy) || 1;
+    nrm.push([-dy / l, dx / l]);
   }
   for (let i = 0; i < n; i++) {
     let mx, my;
     if (i === 0) { [mx, my] = nrm[0]; }
     else if (i === n - 1) { [mx, my] = nrm[n - 2]; }
     else {
-      const a = nrm[i - 1], b = nrm[i], d = 1 + a[0] * b[0] + a[1] * b[1];
+      const a = nrm[i - 1], b = nrm[i], d = Math.max(0.25, 1 + a[0] * b[0] + a[1] * b[1]);
       mx = (a[0] + b[0]) / d; my = (a[1] + b[1]) / d;
     }
     out.push([pts[i][0] + mx * off, pts[i][1] + my * off]);
@@ -198,98 +182,298 @@ function offsetPolyline(pts, off) {
   return out;
 }
 
-function makeTrace(pts, bus) {
+function makeTrace(pts, bus, cyan) {
   const cum = [0];
-  for (let i = 1; i < pts.length; i++)
+  for (let i = 1; i < pts.length; i++) {
     cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
-  return { pts, cum, len: cum[cum.length - 1], bus, pad: 0 };
+  }
+  return { pts, cum, len: cum[cum.length - 1], bus, pad: 0, cyan };
 }
 
 function pointAt(tr, s) {
   const { pts, cum } = tr;
   s = Math.max(0, Math.min(tr.len, s));
-  let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+  let i = 1;
+  while (i < cum.length - 1 && cum[i] < s) i++;
   const f = (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1);
-  return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f,
-          pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+  return [
+    pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f,
+    pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f,
+  ];
 }
 
 function buildLayout() {
-  // four buses entering from different edges, each kept in its own quadrant
-  const specs = [
-    { x: -30, y: range(560, 700), h: 0, region: [-40, 450, 900, 770] },   // left, low
-    { x: VW + 30, y: range(200, 330), h: 4, region: [1000, 90, VW + 40, 620] }, // right, high
-    { x: range(1580, 1720), y: VH + 30, h: 6, region: [1500, 420, 1800, VH + 40] }, // bottom right
-    { x: -30, y: range(170, 270), h: 0, region: [-40, 90, 760, 440] },     // left, high
+  // Architectural multi-trace buses routing from the chamfered armor plates
+  // toward the central carbon field and core power rail
+  const busSpecs = [
+    // 1. Upper-left primary bus
+    {
+      n: 4, gap: 12, cyan: false,
+      pts: [[-20, 210], [215, 210], [345, 340], [565, 340], [635, 270], [770, 270]],
+    },
+    // 2. Mid-left high-speed bus
+    {
+      n: 5, gap: 11, cyan: true,
+      pts: [[-20, 625], [375, 625], [510, 490], [768, 490]],
+    },
+    // 3. Lower-left auxiliary bus feeding toward the LED rail
+    {
+      n: 3, gap: 12, cyan: false,
+      pts: [[-20, 790], [220, 790], [285, 725], [470, 725], [545, 800], [685, 800]],
+    },
+    // 4. Upper-right primary bus
+    {
+      n: 4, gap: 12, cyan: false,
+      pts: [[VW + 20, 250], [1690, 250], [1565, 375], [1330, 375], [1255, 300], [1130, 300]],
+    },
+    // 5. Mid-right telemetry bus
+    {
+      n: 5, gap: 11, cyan: true,
+      pts: [[VW + 20, 595], [1555, 595], [1425, 480], [1152, 480]],
+    },
+    // 6. Lower-right bus routing from bottom-right armor plate
+    {
+      n: 4, gap: 12, cyan: false,
+      pts: [[VW + 20, 780], [1660, 780], [1545, 665], [1335, 665], [1255, 745], [1160, 745]],
+    },
+    // 7. Top-center dorsal sensor bus
+    {
+      n: 3, gap: 12, cyan: true,
+      pts: [[680, -20], [680, 95], [755, 170], [935, 170]],
+    },
+    // 8. Top-right dorsal bus
+    {
+      n: 3, gap: 12, cyan: false,
+      pts: [[1240, -20], [1240, 105], [1165, 180], [1015, 180]],
+    },
+    // 9. Bottom-left vertical riser
+    {
+      n: 3, gap: 11, cyan: false,
+      pts: [[330, VH + 20], [330, 945], [405, 870]],
+    },
+    // 10. Bottom-right vertical riser
+    {
+      n: 3, gap: 11, cyan: true,
+      pts: [[1590, VH + 20], [1590, 945], [1515, 870]],
+    },
   ];
-  if (rand() < 0.5) specs[2] = { x: VW + 30, y: range(700, 860), h: 4, region: [1150, 420, VW + 40, 770] };
-  for (const sp of specs) {
-    const center = makeBus(sp.x, sp.y, sp.h, range(650, 950), sp.region);
-    if (center.length < 2) continue;
-    const n = 2 + Math.floor(rand() * 4), gap = 13;
+
+  for (const sp of busSpecs) {
     const bus = { traces: [] };
-    for (let k = 0; k < n; k++) {
-      const off = (k - (n - 1) / 2) * gap;
-      const pts = offsetPolyline(center, off);
-      // stagger the ends slightly so pads don't sit in a rigid row
+    for (let k = 0; k < sp.n; k++) {
+      const off = (k - (sp.n - 1) / 2) * sp.gap;
+      const pts = offsetPolyline(sp.pts, off);
+      // Stagger terminal pads slightly for an authentic PCB look
       const a = pts[pts.length - 2], b = pts[pts.length - 1];
-      const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy);
-      const ext = (k % 2) * 16 + range(-4, 4);
-      b[0] += dx / l * ext; b[1] += dy / l * ext;
-      const tr = makeTrace(pts, bus);
-      bus.traces.push(tr); world.traces.push(tr);
+      const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+      const ext = ((k % 2) ? 14 : -6) + (k - 1) * 4;
+      b[0] += (dx / l) * ext;
+      b[1] += (dy / l) * ext;
+      const tr = makeTrace(pts, bus, sp.cyan || (k === Math.floor(sp.n / 2) && rand() < 0.4));
+      bus.traces.push(tr);
+      world.traces.push(tr);
     }
     world.buses.push(bus);
   }
 }
 
-// ---------------------------------------------------------- pre-render ----
+// ---------------------------------------------------------------------------
+// Pre-rendered textures: 2x2 twill carbon weave, hex vents, armor plates, PCB
+// ---------------------------------------------------------------------------
 function weaveTile(cell, mode) {
   const rng = texRng(9173);
   const t = mkCanvas(cell * 4, cell * 4), c = t.getContext('2d');
   for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
     const horiz = ((i + j) & 3) < 2;
     const x = i * cell, y = j * cell;
-    // position within the 2-cell float, for end shading
     const first = horiz ? (((i + j) & 3) === 0) : (((i + j) & 3) === 2);
-    let g;
-    if (horiz) g = c.createLinearGradient(0, y, 0, y + cell);
-    else g = c.createLinearGradient(x, 0, x + cell, 0);
+    const g = horiz
+      ? c.createLinearGradient(0, y, 0, y + cell)
+      : c.createLinearGradient(x, 0, x + cell, 0);
+
     if (mode === 'base') {
-      const hi = horiz ? '#1b1f25' : '#121519', lo = horiz ? '#08090b' : '#050608';
-      g.addColorStop(0, lo); g.addColorStop(0.18, horiz ? '#13161a' : '#0d0f12');
+      const hi = horiz ? '#212730' : '#161a21';
+      const mid = horiz ? '#161a20' : '#0f1217';
+      const lo = horiz ? '#080a0d' : '#050608';
+      g.addColorStop(0, lo);
+      g.addColorStop(0.18, mid);
       g.addColorStop(0.5, hi);
-      g.addColorStop(0.82, horiz ? '#111418' : '#0b0d10'); g.addColorStop(1, lo);
+      g.addColorStop(0.82, mid);
+      g.addColorStop(1, lo);
     } else {
       const on = (mode === 'H') === horiz;
       if (!on) continue;
-      g.addColorStop(0, 'rgba(110,135,170,0.12)');
-      g.addColorStop(0.25, 'rgba(140,165,200,0.5)');
-      g.addColorStop(0.5, 'rgba(190,208,232,0.8)');
-      g.addColorStop(0.75, 'rgba(140,165,200,0.5)');
-      g.addColorStop(1, 'rgba(110,135,170,0.12)');
+      g.addColorStop(0, 'rgba(95,145,220,0.14)');
+      g.addColorStop(0.25, 'rgba(130,180,245,0.58)');
+      g.addColorStop(0.5, 'rgba(205,230,255,0.92)');
+      g.addColorStop(0.75, 'rgba(130,180,245,0.58)');
+      g.addColorStop(1, 'rgba(95,145,220,0.14)');
     }
-    c.fillStyle = g; c.fillRect(x, y, cell, cell);
-    // fibre striations along the tow
-    const n = Math.max(3, Math.round(cell / 2.2));
+    c.fillStyle = g;
+    c.fillRect(x, y, cell, cell);
+
+    // Micro-filament striations along the carbon tow
+    const n = Math.max(3, Math.round(cell / 2.1));
     for (let f = 1; f < n; f++) {
-      const p = f / n * cell;
-      const a = mode === 'base' ? 0.02 + rng() * 0.06 : 0.05 + rng() * 0.12;
-      c.fillStyle = (rng() < 0.5 || mode !== 'base') ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a * 0.5})`;
-      if (horiz) c.fillRect(x, y + p, cell, Math.max(0.6, cell / 28));
-      else c.fillRect(x + p, y, Math.max(0.6, cell / 28), cell);
+      const p = (f / n) * cell;
+      const a = mode === 'base' ? 0.03 + rng() * 0.07 : 0.06 + rng() * 0.12;
+      c.fillStyle = (rng() < 0.5 || mode !== 'base')
+        ? `rgba(0,0,0,${a})`
+        : `rgba(210,230,255,${a * 0.55})`;
+      if (horiz) c.fillRect(x, y + p, cell, Math.max(0.6, cell / 26));
+      else c.fillRect(x + p, y, Math.max(0.6, cell / 26), cell);
     }
-    // darken where the tow dives under its neighbour
+
+    // Shadow pocket where the tow dives under its perpendicular neighbor
     const eg = horiz
-      ? c.createLinearGradient(first ? x : x + cell, 0, first ? x + cell * 0.35 : x + cell * 0.65, 0)
-      : c.createLinearGradient(0, first ? y : y + cell, 0, first ? y + cell * 0.35 : y + cell * 0.65);
-    eg.addColorStop(0, mode === 'base' ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.6)');
+      ? c.createLinearGradient(first ? x : x + cell, 0, first ? x + cell * 0.38 : x + cell * 0.62, 0)
+      : c.createLinearGradient(0, first ? y : y + cell, 0, first ? y + cell * 0.38 : y + cell * 0.62);
+    eg.addColorStop(0, mode === 'base' ? 'rgba(0,0,0,0.52)' : 'rgba(0,0,0,0.65)');
     eg.addColorStop(1, 'rgba(0,0,0,0)');
     c.globalCompositeOperation = mode === 'base' ? 'source-over' : 'destination-out';
-    c.fillStyle = eg; c.fillRect(x, y, cell, cell);
+    c.fillStyle = eg;
+    c.fillRect(x, y, cell, cell);
     c.globalCompositeOperation = 'source-over';
   }
   return t;
+}
+
+function drawHexVent(c, polyPts, cx, cy, rx, ry) {
+  c.save();
+  c.beginPath();
+  c.moveTo(polyPts[0][0], polyPts[0][1]);
+  for (let i = 1; i < polyPts.length; i++) c.lineTo(polyPts[i][0], polyPts[i][1]);
+  c.closePath();
+  c.clip();
+
+  // Deep recessed cavity + blue LED backlight
+  c.fillStyle = '#04060a';
+  c.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
+  const bg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry));
+  bg.addColorStop(0, 'rgba(55,125,255,0.42)');
+  bg.addColorStop(0.55, 'rgba(35,85,200,0.18)');
+  bg.addColorStop(1, 'rgba(15,35,90,0.02)');
+  c.fillStyle = bg;
+  c.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
+
+  // Honeycomb hex mesh grid
+  const R = 9, dx = R * 1.5, dy = R * Math.sqrt(3);
+  c.strokeStyle = '#141922';
+  c.lineWidth = 2.4;
+  c.beginPath();
+  for (let row = -12; row <= 12; row++) {
+    for (let col = -16; col <= 16; col++) {
+      const hx = cx + col * dx;
+      const hy = cy + row * dy + (col & 1 ? dy / 2 : 0);
+      if (Math.abs(hx - cx) > rx + R || Math.abs(hy - cy) > ry + R) continue;
+      for (let s = 0; s < 6; s++) {
+        const a = (s * Math.PI) / 3;
+        const px = hx + Math.cos(a) * (R - 1), py = hy + Math.sin(a) * (R - 1);
+        s === 0 ? c.moveTo(px, py) : c.lineTo(px, py);
+      }
+      c.closePath();
+    }
+  }
+  c.stroke();
+
+  // Inner shadow around the vent lip
+  c.strokeStyle = 'rgba(0,0,0,0.85)';
+  c.lineWidth = 6;
+  c.stroke();
+  c.restore();
+
+  // Crisp bevelled rim on vent opening
+  c.beginPath();
+  c.moveTo(polyPts[0][0], polyPts[0][1]);
+  for (let i = 1; i < polyPts.length; i++) c.lineTo(polyPts[i][0], polyPts[i][1]);
+  c.closePath();
+  c.strokeStyle = 'rgba(90,145,220,0.38)';
+  c.lineWidth = 1.4;
+  c.stroke();
+}
+
+function drawBolt(c, x, y) {
+  c.save();
+  c.beginPath(); c.arc(x, y, 7, 0, TAU);
+  c.fillStyle = '#090b0f'; c.fill();
+  c.strokeStyle = 'rgba(110,145,195,0.28)'; c.lineWidth = 1; c.stroke();
+  c.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i * Math.PI) / 3 + 0.2;
+    const px = x + Math.cos(a) * 3.8, py = y + Math.sin(a) * 3.8;
+    i === 0 ? c.moveTo(px, py) : c.lineTo(px, py);
+  }
+  c.closePath();
+  c.fillStyle = '#161b24'; c.fill();
+  c.strokeStyle = 'rgba(74,140,255,0.35)'; c.lineWidth = 0.9; c.stroke();
+  c.restore();
+}
+
+function getArmorPlates() {
+  return [
+    {
+      pts: [[0, 0], [430, 0], [310, 120], [135, 120], [0, 255]],
+      bevel: [[430, 0], [310, 120], [135, 120], [0, 255]],
+      bolts: [[375, 28], [295, 96], [122, 98], [28, 195]],
+    },
+    {
+      pts: [[VW, 0], [VW - 430, 0], [VW - 310, 120], [VW - 135, 120], [VW, 255]],
+      bevel: [[VW - 430, 0], [VW - 310, 120], [VW - 135, 120], [VW, 255]],
+      bolts: [[VW - 375, 28], [VW - 295, 96], [VW - 122, 98], [VW - 28, 195]],
+    },
+    {
+      pts: [[0, VH], [460, VH], [340, VH - 120], [140, VH - 120], [0, VH - 260]],
+      bevel: [[460, VH], [340, VH - 120], [140, VH - 120], [0, VH - 260]],
+      bolts: [[400, VH - 28], [325, VH - 96], [126, VH - 98], [28, VH - 200]],
+    },
+    {
+      pts: [[VW, VH], [VW - 460, VH], [VW - 340, VH - 120], [VW - 140, VH - 120], [VW, VH - 260]],
+      bevel: [[VW - 460, VH], [VW - 340, VH - 120], [VW - 140, VH - 120], [VW, VH - 260]],
+      bolts: [[VW - 400, VH - 28], [VW - 325, VH - 96], [VW - 126, VH - 98], [VW - 28, VH - 200]],
+    },
+  ];
+}
+
+function drawArmorChassis(c) {
+  const plates = getArmorPlates();
+
+  for (const p of plates) {
+    // Drop shadow into seam channel
+    c.save();
+    c.beginPath();
+    p.pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
+    c.closePath();
+    c.shadowColor = 'rgba(0,0,0,0.95)';
+    c.shadowBlur = 18;
+    const gr = c.createLinearGradient(0, 0, 0, VH);
+    gr.addColorStop(0, '#12161d');
+    gr.addColorStop(0.5, '#0d1016');
+    gr.addColorStop(1, '#090b10');
+    c.fillStyle = gr;
+    c.fill();
+    c.restore();
+
+    // Subtle brushed-metal sheen & recessed seam groove
+    c.beginPath();
+    p.bevel.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
+    c.strokeStyle = 'rgba(0,0,0,0.9)';
+    c.lineWidth = 7;
+    c.stroke();
+    c.strokeStyle = 'rgba(74,140,255,0.22)';
+    c.lineWidth = 2.2;
+    c.stroke();
+    c.strokeStyle = 'rgba(165,205,255,0.42)';
+    c.lineWidth = 1;
+    c.stroke();
+
+    for (const [bx, by] of p.bolts) drawBolt(c, bx, by);
+  }
+
+  // Four recessed hexagonal mesh intake vents in the armor plates
+  drawHexVent(c, [[24, 24], [325, 24], [260, 88], [24, 88]], 165, 56, 160, 40);
+  drawHexVent(c, [[VW - 24, 24], [VW - 325, 24], [VW - 260, 88], [VW - 24, 88]], VW - 165, 56, 160, 40);
+  drawHexVent(c, [[24, VH - 24], [350, VH - 24], [285, VH - 88], [24, VH - 88]], 175, VH - 56, 170, 40);
+  drawHexVent(c, [[VW - 24, VH - 24], [VW - 350, VH - 24], [VW - 285, VH - 88], [VW - 24, VH - 88]], VW - 175, VH - 56, 170, 40);
 }
 
 function tracePath(c, tr) {
@@ -299,83 +483,215 @@ function tracePath(c, tr) {
 }
 
 function prerender() {
-  const k = S.k = Math.min(2, Math.max(0.5, LW.view.scale || 1));
+  const k = (S.k = Math.min(2, Math.max(0.5, LW.view.scale || 1)));
   const W = Math.ceil(VW * k), H = Math.ceil(VH * k);
-  const cell = Math.max(4, Math.round(13 * k));
+  const cell = Math.max(5, Math.round(14 * k));
 
-  // --- base: weave + engraved traces + lighting
   S.base = mkCanvas(W, H);
   let c = S.base.getContext('2d');
   c.fillStyle = c.createPattern(weaveTile(cell, 'base'), 'repeat');
   c.fillRect(0, 0, W, H);
   c.setTransform(k, 0, 0, k, 0, 0);
-  // engraved grooves
-  c.lineJoin = 'miter'; c.lineCap = 'round';
+
+  // Subtle central radial key-light so the carbon weave is visible & tactile
+  let g = c.createRadialGradient(960, 500, 40, 960, 500, 920);
+  g.addColorStop(0, 'rgba(60,115,210,0.12)');
+  g.addColorStop(0.55, 'rgba(35,75,155,0.05)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, VW, VH);
+
+  // Engraved circuit channels & terminal via pads
+  c.lineJoin = 'miter';
+  c.lineCap = 'round';
   for (const tr of world.traces) {
     tracePath(c, tr);
-    c.strokeStyle = 'rgba(0,0,0,0.75)'; c.lineWidth = 5; c.stroke();
-    c.strokeStyle = 'rgba(70,95,130,0.22)'; c.lineWidth = 1.2; c.stroke();
-    const e = tr.pts[tr.pts.length - 1];
-    c.beginPath(); c.arc(e[0], e[1], 5.5, 0, Math.PI * 2);
-    c.fillStyle = 'rgba(0,0,0,0.8)'; c.fill();
-    c.beginPath(); c.arc(e[0], e[1], 3.2, 0, Math.PI * 2);
-    c.strokeStyle = 'rgba(90,120,160,0.35)'; c.lineWidth = 1; c.stroke();
-  }
-  // deep blue ambient spill near the strip
-  let g = c.createRadialGradient(960, world.stripY, 0, 960, world.stripY, 900);
-  g.addColorStop(0, 'rgba(30,70,170,0.16)'); g.addColorStop(0.5, 'rgba(20,45,120,0.06)');
-  g.addColorStop(1, 'rgba(10,20,60,0)');
-  c.save(); c.translate(960, world.stripY); c.scale(1, 0.45); c.translate(-960, -world.stripY);
-  c.fillStyle = g; c.fillRect(0, 0, VW, VH * 3); c.restore();
-  // top shade for the bar, then vignette
-  g = c.createLinearGradient(0, 0, 0, 220);
-  g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
-  c.fillStyle = g; c.fillRect(0, 0, VW, 220);
-  g = c.createRadialGradient(960, 560, 250, 960, 560, 1250);
-  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.55, 'rgba(0,0,0,0.35)');
-  g.addColorStop(1, 'rgba(0,0,0,0.88)');
-  c.fillStyle = g; c.fillRect(0, 0, VW, VH);
+    c.strokeStyle = 'rgba(0,0,0,0.82)';
+    c.lineWidth = 5.5;
+    c.stroke();
+    c.strokeStyle = tr.cyan ? 'rgba(79,195,232,0.28)' : 'rgba(74,140,255,0.26)';
+    c.lineWidth = 1.4;
+    c.stroke();
 
-  // --- directional highlight layers (revealed by moving masks)
+    // Intermediate corner micro-vias
+    for (let i = 1; i < tr.pts.length - 1; i++) {
+      if ((i + tr.pts.length) % 2 === 0) {
+        const [vx, vy] = tr.pts[i];
+        c.beginPath(); c.arc(vx, vy, 2.6, 0, TAU);
+        c.fillStyle = '#070a10'; c.fill();
+        c.strokeStyle = 'rgba(100,155,230,0.32)'; c.lineWidth = 1; c.stroke();
+      }
+    }
+
+    // Terminal via pad
+    const e = tr.pts[tr.pts.length - 1];
+    c.beginPath(); c.arc(e[0], e[1], 6.2, 0, TAU);
+    c.fillStyle = 'rgba(4,6,10,0.9)'; c.fill();
+    c.beginPath(); c.arc(e[0], e[1], 3.8, 0, TAU);
+    c.strokeStyle = tr.cyan ? 'rgba(100,210,245,0.52)' : 'rgba(95,155,245,0.48)';
+    c.lineWidth = 1.3; c.stroke();
+    c.beginPath(); c.arc(e[0], e[1], 1.5, 0, TAU);
+    c.fillStyle = tr.cyan ? 'rgba(130,225,255,0.55)' : 'rgba(110,170,255,0.5)';
+    c.fill();
+  }
+
+  // Central recessed core module / telemetry node
+  c.save();
+  c.translate(960, 485);
+  const rx = 148, ry = 82, ch = 26;
+  c.beginPath();
+  c.moveTo(-rx + ch, -ry); c.lineTo(rx - ch, -ry);
+  c.lineTo(rx, -ry + ch); c.lineTo(rx, ry - ch);
+  c.lineTo(rx - ch, ry); c.lineTo(-rx + ch, ry);
+  c.lineTo(-rx, ry - ch); c.lineTo(-rx, -ry + ch);
+  c.closePath();
+  c.fillStyle = 'rgba(6,9,15,0.68)';
+  c.fill();
+  c.strokeStyle = 'rgba(0,0,0,0.88)'; c.lineWidth = 5; c.stroke();
+  c.strokeStyle = 'rgba(79,195,232,0.34)'; c.lineWidth = 1.4; c.stroke();
+  // Inner precision rings & ticks
+  c.strokeStyle = 'rgba(74,140,255,0.35)'; c.lineWidth = 1.4;
+  c.beginPath(); c.arc(0, 0, 50, -0.75, 0.75); c.stroke();
+  c.beginPath(); c.arc(0, 0, 50, Math.PI - 0.75, Math.PI + 0.75); c.stroke();
+  c.strokeStyle = 'rgba(79,195,232,0.45)';
+  c.beginPath(); c.arc(0, 0, 26, 0, TAU); c.stroke();
+  c.fillStyle = 'rgba(74,140,255,0.22)';
+  c.beginPath(); c.arc(0, 0, 9, 0, TAU); c.fill();
+  c.restore();
+
+  // Machined corner armor plates on top of the weave & bus entries
+  drawArmorChassis(c);
+
+  // Deep blue ambient spill near the lower LED strip
+  g = c.createRadialGradient(960, world.stripY, 0, 960, world.stripY, 880);
+  g.addColorStop(0, 'rgba(40,95,220,0.22)');
+  g.addColorStop(0.5, 'rgba(25,55,145,0.08)');
+  g.addColorStop(1, 'rgba(10,20,60,0)');
+  c.save();
+  c.translate(960, world.stripY);
+  c.scale(1, 0.42);
+  c.translate(-960, -world.stripY);
+  c.fillStyle = g;
+  c.fillRect(0, 0, VW, VH * 3);
+  c.restore();
+
+  // Recessed housing for the lower LED power bar
+  const sx0 = world.stripX0, sx1 = world.stripX1, sy = world.stripY;
+  c.beginPath();
+  c.moveTo(sx0 - 18, sy);
+  c.lineTo(sx0, sy - 7);
+  c.lineTo(sx1, sy - 7);
+  c.lineTo(sx1 + 18, sy);
+  c.lineTo(sx1, sy + 7);
+  c.lineTo(sx0, sy + 7);
+  c.closePath();
+  c.fillStyle = 'rgba(4,6,10,0.88)';
+  c.fill();
+  c.strokeStyle = 'rgba(80,135,215,0.32)';
+  c.lineWidth = 1.2;
+  c.stroke();
+
+  // Vignette & top status-bar shade
+  g = c.createLinearGradient(0, 0, 0, 180);
+  g.addColorStop(0, 'rgba(0,0,0,0.48)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, VW, 180);
+
+  g = c.createRadialGradient(960, 540, 320, 960, 540, 1280);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(0.65, 'rgba(0,0,0,0.28)');
+  g.addColorStop(1, 'rgba(0,0,0,0.78)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, VW, VH);
+
+  // Directional highlight layers for the 2x2 twill tows (masked out under armor plates & core badge)
+  const plates = getArmorPlates();
   for (const m of ['H', 'V']) {
     const cv = mkCanvas(W, H), cc = cv.getContext('2d');
     cc.fillStyle = cc.createPattern(weaveTile(cell, m), 'repeat');
     cc.fillRect(0, 0, W, H);
-    if (m === 'H') S.hiH = cv; else S.hiV = cv;
+    cc.setTransform(k, 0, 0, k, 0, 0);
+    cc.globalCompositeOperation = 'destination-out';
+    cc.fillStyle = '#000';
+    for (const p of plates) {
+      cc.beginPath();
+      p.pts.forEach(([x, y], i) => (i ? cc.lineTo(x, y) : cc.moveTo(x, y)));
+      cc.closePath();
+      cc.fill();
+    }
+    // Also mask out the recessed center core module
+    cc.save();
+    cc.translate(960, 485);
+    const rx = 148, ry = 82, ch = 26;
+    cc.beginPath();
+    cc.moveTo(-rx + ch, -ry); cc.lineTo(rx - ch, -ry);
+    cc.lineTo(rx, -ry + ch); cc.lineTo(rx, ry - ch);
+    cc.lineTo(rx - ch, ry); cc.lineTo(-rx + ch, ry);
+    cc.lineTo(-rx, ry - ch); cc.lineTo(-rx, -ry + ch);
+    cc.closePath();
+    cc.fill();
+    cc.restore();
+    cc.globalCompositeOperation = 'source-over';
+    cc.setTransform(1, 0, 0, 1, 0, 0);
+    if (m === 'H') S.hiH = cv;
+    else S.hiV = cv;
   }
 
-  S.tmp = mkCanvas(W, H); S.tctx = S.tmp.getContext('2d');
+  S.tmp = mkCanvas(W, H);
+  S.tctx = S.tmp.getContext('2d');
 
-  // --- glow sprite
+  // Glow sprites (electric blue + ice cyan)
   S.glow = mkCanvas(64, 64);
   c = S.glow.getContext('2d');
   g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0, 'rgba(210,230,255,1)'); g.addColorStop(0.12, 'rgba(120,175,255,0.75)');
-  g.addColorStop(0.4, 'rgba(50,110,255,0.22)'); g.addColorStop(1, 'rgba(30,80,255,0)');
-  c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+  g.addColorStop(0, 'rgba(225,242,255,1)');
+  g.addColorStop(0.15, 'rgba(115,175,255,0.85)');
+  g.addColorStop(0.45, 'rgba(55,115,255,0.28)');
+  g.addColorStop(1, 'rgba(30,80,255,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, 64, 64);
 
-  // --- ambient strip sprite (virtual size: length x 80)
+  S.glowCyan = mkCanvas(64, 64);
+  c = S.glowCyan.getContext('2d');
+  g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(235,252,255,1)');
+  g.addColorStop(0.15, 'rgba(110,215,248,0.85)');
+  g.addColorStop(0.45, 'rgba(55,170,230,0.28)');
+  g.addColorStop(1, 'rgba(30,130,200,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, 64, 64);
+
+  // Ambient LED power bar sprite
   const sl = world.stripX1 - world.stripX0, sh = 80;
   S.strip = mkCanvas((sl + 160) * k, sh * k);
-  c = S.strip.getContext('2d'); c.setTransform(k, 0, 0, k, 0, 0);
+  c = S.strip.getContext('2d');
+  c.setTransform(k, 0, 0, k, 0, 0);
   const taper = c.createLinearGradient(80, 0, 80 + sl, 0);
-  taper.addColorStop(0, 'rgba(0,0,0,0)'); taper.addColorStop(0.18, 'rgba(0,0,0,1)');
-  taper.addColorStop(0.82, 'rgba(0,0,0,1)'); taper.addColorStop(1, 'rgba(0,0,0,0)');
+  taper.addColorStop(0, 'rgba(0,0,0,0)');
+  taper.addColorStop(0.12, 'rgba(0,0,0,1)');
+  taper.addColorStop(0.88, 'rgba(0,0,0,1)');
+  taper.addColorStop(1, 'rgba(0,0,0,0)');
   g = c.createLinearGradient(0, 0, 0, sh);
-  g.addColorStop(0, 'rgba(40,90,255,0)'); g.addColorStop(0.42, 'rgba(45,100,255,0.14)');
-  g.addColorStop(0.5, 'rgba(60,120,255,0.3)');
-  g.addColorStop(0.58, 'rgba(45,100,255,0.14)'); g.addColorStop(1, 'rgba(40,90,255,0)');
-  c.fillStyle = g; c.fillRect(80, 0, sl, sh);
-  c.fillStyle = 'rgba(120,175,255,0.9)'; c.fillRect(80, sh / 2 - 1, sl, 2);
-  c.fillStyle = 'rgba(220,235,255,0.8)'; c.fillRect(80, sh / 2 - 0.4, sl, 0.8);
+  g.addColorStop(0, 'rgba(40,95,255,0)');
+  g.addColorStop(0.40, 'rgba(55,120,255,0.20)');
+  g.addColorStop(0.50, 'rgba(85,160,255,0.48)');
+  g.addColorStop(0.60, 'rgba(55,120,255,0.20)');
+  g.addColorStop(1, 'rgba(40,95,255,0)');
+  c.fillStyle = g;
+  c.fillRect(80, 0, sl, sh);
+  c.fillStyle = 'rgba(120,185,255,0.95)';
+  c.fillRect(80, sh / 2 - 1.4, sl, 2.8);
+  c.fillStyle = 'rgba(230,245,255,0.95)';
+  c.fillRect(80, sh / 2 - 0.6, sl, 1.2);
   c.globalCompositeOperation = 'destination-in';
-  c.fillStyle = taper; c.fillRect(0, 0, sl + 160, sh);
+  c.fillStyle = taper;
+  c.fillRect(0, 0, sl + 160, sh);
 }
 
-// draw `layer` through a mask painted in virtual coords inside bbox
 function masked(ctx, layer, bx, by, bw, bh, paint, alpha) {
   const k = S.k, t = S.tctx;
-  let sx = Math.max(0, Math.floor(bx * k)), sy = Math.max(0, Math.floor(by * k));
+  const sx = Math.max(0, Math.floor(bx * k)), sy = Math.max(0, Math.floor(by * k));
   const ex = Math.min(layer.width, Math.ceil((bx + bw) * k));
   const ey = Math.min(layer.height, Math.ceil((by + bh) * k));
   const sw = ex - sx, sh = ey - sy;
@@ -393,44 +709,66 @@ function masked(ctx, layer, bx, by, bw, bh, paint, alpha) {
   ctx.globalAlpha = 1;
 }
 
-// ------------------------------------------------------------- events ----
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
 function spawnPulse(tr, delay = 0, s0 = null) {
   world.pulses.push({
-    tr, s: s0 !== null ? s0 : -delay * 500, v: range(380, 620),
-    tail: range(140, 260), a: range(0.75, 1),
+    tr,
+    s: s0 !== null ? s0 : -delay * 520,
+    v: range(400, 640),
+    tail: range(170, 290),
+    a: range(0.82, 1),
   });
 }
 
-function startSweep() {
-  world.sweep = { p: 0, dur: range(2.6, 3.6), ang: range(-0.75, -0.45), a: range(0.4, 0.65) };
+function startSweep(initialP = 0) {
+  world.sweep = {
+    p: initialP,
+    dur: range(2.8, 3.8),
+    ang: range(-0.72, -0.48),
+    a: range(0.48, 0.72),
+  };
 }
 
-// ---------------------------------------------------------------- scene ----
 LW.start({
   init() {
     buildLayout();
-    // sheen spots: slow lissajous drifts with independent phases
     world.sheen = [
-      { layer: 'H', ax: range(0, 6.28), ay: range(0, 6.28), fx: range(0.011, 0.017), fy: range(0.008, 0.013), a: 0.42, r: 640 },
-      { layer: 'V', ax: range(0, 6.28), ay: range(0, 6.28), fx: range(0.009, 0.014), fy: range(0.012, 0.018), a: 0.3, r: 540 },
+      { layer: 'H', ax: 0.7, ay: 1.9, fx: 0.013, fy: 0.010, a: 0.52, r: 720 },
+      { layer: 'V', ax: 3.4, ay: 0.5, fx: 0.011, fy: 0.015, a: 0.40, r: 620 },
     ];
-    for (let i = 0; i < 70; i++) {
+    for (let i = 0; i < 80; i++) {
       world.motes.push({
-        x: range(0, VW), y: range(60, VH), vx: range(-4, 4), vy: range(-9, -2),
-        r: range(0.5, 1.6), ph: range(0, 6.28), f: range(0.3, 1.1), b: range(0.15, 0.6),
+        x: range(0, VW), y: range(60, VH),
+        vx: range(-4, 4), vy: range(-10, -2.5),
+        r: range(0.6, 1.8), ph: range(0, TAU),
+        f: range(0.35, 1.2), b: range(0.2, 0.68),
       });
     }
-    // something already in flight at t=0
-    for (let i = 0; i < 3; i++) { const tr = pick(world.traces); spawnPulse(tr, 0, range(0.2, 0.8) * tr.len); }
+    // Initial pulses in flight
+    for (let i = 0; i < 6; i++) {
+      const tr = world.traces[(i * 5) % world.traces.length];
+      spawnPulse(tr, 0, range(0.25, 0.85) * tr.len);
+    }
+    // Guaranteed bus bursts & sweep around t=8 so default still is vibrant
+    after(6.4, () => startSweep(0));
+    after(6.8, () => {
+      for (const bIdx of [0, 4, 1]) {
+        const bus = world.buses[bIdx];
+        if (bus) bus.traces.forEach((tr, i) => spawnPulse(tr, i * 0.08));
+      }
+    });
+    after(7.2, () => { world.scan = { p: 0, dir: 1, v: 0.45 }; });
 
-    every(0.7, 3.2, () => spawnPulse(pick(world.traces)));
-    every(8, 20, () => {           // whole-bus burst
+    every(0.45, 1.8, () => spawnPulse(pick(world.traces)));
+    every(4.5, 11.0, () => {
       const bus = pick(world.buses);
       const order = rand() < 0.5 ? bus.traces : bus.traces.slice().reverse();
-      order.forEach((tr, i) => spawnPulse(tr, i * 0.09));
+      order.forEach((tr, i) => spawnPulse(tr, i * 0.08));
     });
-    after(range(3, 7), () => { startSweep(); every(16, 40, startSweep); });
-    every(7, 19, () => { world.scan = { p: 0, dir: rand() < 0.5 ? 1 : -1, v: range(0.35, 0.55) }; });
+    after(range(2.0, 4.5), () => { startSweep(0); every(11, 24, () => startSweep(0)); });
+    every(5, 13, () => { world.scan = { p: 0, dir: rand() < 0.5 ? 1 : -1, v: range(0.38, 0.58) }; });
   },
   resize() { prerender(); },
   update(dt, t) {
@@ -441,117 +779,169 @@ LW.start({
       if (was < p.tr.len && p.s >= p.tr.len) p.tr.pad = 1;
       if (p.s - p.tail > p.tr.len) world.pulses.splice(i, 1);
     }
-    for (const tr of world.traces) tr.pad = Math.max(0, tr.pad - dt * 0.9);
-    if (world.sweep) { world.sweep.p += dt / world.sweep.dur; if (world.sweep.p >= 1) world.sweep = null; }
-    if (world.scan) { world.scan.p += dt * world.scan.v; if (world.scan.p >= 1) world.scan = null; }
+    for (const tr of world.traces) tr.pad = Math.max(0, tr.pad - dt * 0.85);
+    if (world.sweep) {
+      world.sweep.p += dt / world.sweep.dur;
+      if (world.sweep.p >= 1) world.sweep = null;
+    }
+    if (world.scan) {
+      world.scan.p += dt * world.scan.v;
+      if (world.scan.p >= 1) world.scan = null;
+    }
     for (const m of world.motes) {
-      m.x += (m.vx + Math.sin(t * 0.3 + m.ph) * 3) * dt; m.y += m.vy * dt;
+      m.x += (m.vx + Math.sin(t * 0.35 + m.ph) * 3) * dt;
+      m.y += m.vy * dt;
       if (m.y < 50) { m.y = VH + 5; m.x = range(0, VW); }
-      if (m.x < -10) m.x = VW + 10; else if (m.x > VW + 10) m.x = -10;
+      if (m.x < -10) m.x = VW + 10;
+      else if (m.x > VW + 10) m.x = -10;
     }
   },
   draw(ctx, t) {
     ctx.drawImage(S.base, 0, 0, VW, VH);
 
-    // broad drifting specular sheen on each tow direction
+    // Broad drifting anisotropic specular sheen on each carbon tow direction
     for (const sp of world.sheen) {
-      const cx = 960 + Math.sin(t * sp.fx * 6.283 + sp.ax) * 620;
-      const cy = 560 + Math.sin(t * sp.fy * 6.283 + sp.ay) * 300;
-      const r = sp.r, rot = -0.5 + Math.sin(t * 0.01 + sp.ax) * 0.25;
+      const cx = 960 + Math.sin(t * sp.fx * TAU + sp.ax) * 580;
+      const cy = 520 + Math.sin(t * sp.fy * TAU + sp.ay) * 280;
+      const r = sp.r, rot = -0.52 + Math.sin(t * 0.012 + sp.ax) * 0.22;
       const cr = Math.cos(rot), sr = Math.sin(rot);
-      const hw = r * Math.hypot(cr, 0.42 * sr), hh = r * Math.hypot(sr, 0.42 * cr);
+      const hw = r * Math.hypot(cr, 0.45 * sr), hh = r * Math.hypot(sr, 0.45 * cr);
       masked(ctx, sp.layer === 'H' ? S.hiH : S.hiV, cx - hw, cy - hh, hw * 2, hh * 2, (c) => {
-        c.translate(cx, cy); c.rotate(rot); c.scale(1, 0.42);
+        c.translate(cx, cy); c.rotate(rot); c.scale(1, 0.45);
         const g = c.createRadialGradient(0, 0, 0, 0, 0, r);
-        g.addColorStop(0, 'rgba(0,0,0,0.85)'); g.addColorStop(0.35, 'rgba(0,0,0,0.45)');
-        g.addColorStop(0.7, 'rgba(0,0,0,0.12)'); g.addColorStop(1, 'rgba(0,0,0,0)');
-        c.fillStyle = g; c.fillRect(-r, -r, r * 2, r * 2);
+        g.addColorStop(0, 'rgba(0,0,0,0.92)');
+        g.addColorStop(0.38, 'rgba(0,0,0,0.52)');
+        g.addColorStop(0.72, 'rgba(0,0,0,0.16)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        c.fillStyle = g;
+        c.fillRect(-r, -r, r * 2, r * 2);
       }, sp.a);
     }
 
-    // rare diagonal light sweep across the weave
+    // Diagonal light sweep across the carbon weave
     const sw = world.sweep;
     if (sw) {
       const e = sw.p * sw.p * (3 - 2 * sw.p);
-      const reach = 1400, pos = -reach + e * reach * 2, bw = 170;
+      const reach = 1420, pos = -reach + e * reach * 2, bw = 210;
       const env = Math.sin(Math.PI * sw.p);
       const paint = (c) => {
-        c.translate(960, 540); c.rotate(sw.ang + Math.PI / 2);
+        c.translate(960, 540);
+        c.rotate(sw.ang + Math.PI / 2);
         const g = c.createLinearGradient(pos - bw, 0, pos + bw, 0);
-        g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.42, 'rgba(0,0,0,0.6)');
-        g.addColorStop(0.5, 'rgba(0,0,0,1)'); g.addColorStop(0.58, 'rgba(0,0,0,0.6)');
+        g.addColorStop(0, 'rgba(0,0,0,0)');
+        g.addColorStop(0.40, 'rgba(0,0,0,0.65)');
+        g.addColorStop(0.50, 'rgba(0,0,0,1)');
+        g.addColorStop(0.60, 'rgba(0,0,0,0.65)');
         g.addColorStop(1, 'rgba(0,0,0,0)');
-        c.fillStyle = g; c.fillRect(pos - bw, -1300, bw * 2, 2600);
+        c.fillStyle = g;
+        c.fillRect(pos - bw, -1300, bw * 2, 2600);
       };
       masked(ctx, S.hiH, 0, 0, VW, VH, paint, sw.a * env);
-      masked(ctx, S.hiV, 0, 0, VW, VH, paint, sw.a * env * 0.8);
+      masked(ctx, S.hiV, 0, 0, VW, VH, paint, sw.a * env * 0.85);
     }
 
-    // traces: breathing ambient glow
+    // Breathing ambient glow along all engraved circuit traces
     ctx.globalCompositeOperation = 'lighter';
-    const br = 0.42 + 0.14 * Math.sin(t * 0.45);
-    ctx.lineJoin = 'miter'; ctx.lineCap = 'round';
-    ctx.beginPath();
-    for (const tr of world.traces) {
-      ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
-      for (let i = 1; i < tr.pts.length; i++) ctx.lineTo(tr.pts[i][0], tr.pts[i][1]);
+    const br = 0.52 + 0.16 * Math.sin(t * 0.55);
+    ctx.lineJoin = 'miter';
+    ctx.lineCap = 'round';
+    for (const [isCyan, colGlow, colCore] of [
+      [false, '50,115,255', '74,145,255'],
+      [true, '55,175,235', '95,215,250'],
+    ]) {
+      ctx.beginPath();
+      for (const tr of world.traces) {
+        if (Boolean(tr.cyan) !== isCyan) continue;
+        ctx.moveTo(tr.pts[0][0], tr.pts[0][1]);
+        for (let i = 1; i < tr.pts.length; i++) ctx.lineTo(tr.pts[i][0], tr.pts[i][1]);
+      }
+      ctx.strokeStyle = `rgba(${colGlow},${0.13 * br})`;
+      ctx.lineWidth = 8;
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(${colCore},${0.62 * br})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
-    ctx.strokeStyle = `rgba(50,110,255,${0.10 * br})`; ctx.lineWidth = 7; ctx.stroke();
-    ctx.strokeStyle = `rgba(70,140,255,${0.55 * br})`; ctx.lineWidth = 1.3; ctx.stroke();
 
-    // pulses
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // Center telemetry core pulse
+    const cPulse = 0.45 + 0.25 * Math.sin(t * 1.4);
+    ctx.globalAlpha = cPulse;
+    ctx.drawImage(S.glowCyan, 960 - 28, 485 - 28, 56, 56);
+    ctx.globalAlpha = 1;
+
+    // High-speed data pulses
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     for (const p of world.pulses) {
       const tr = p.tr, head = Math.min(p.s, tr.len), tail0 = p.s - p.tail;
       if (head <= 0) continue;
+      const rgb = tr.cyan ? CYAN : BLUE;
       const N = 10;
       for (let i = 0; i < N; i++) {
-        const s0 = Math.max(0, tail0 + p.tail * i / N), s1 = Math.min(head, tail0 + p.tail * (i + 1) / N);
+        const s0 = Math.max(0, tail0 + (p.tail * i) / N);
+        const s1 = Math.min(head, tail0 + (p.tail * (i + 1)) / N);
         if (s1 <= s0) continue;
         const a0 = pointAt(tr, s0), a1 = pointAt(tr, s1);
-        // include a corner if one lies inside this piece
-        ctx.beginPath(); ctx.moveTo(a0[0], a0[1]);
-        for (let j = 1; j < tr.cum.length - 1; j++)
+        ctx.beginPath();
+        ctx.moveTo(a0[0], a0[1]);
+        for (let j = 1; j < tr.cum.length - 1; j++) {
           if (tr.cum[j] > s0 && tr.cum[j] < s1) ctx.lineTo(tr.pts[j][0], tr.pts[j][1]);
+        }
         ctx.lineTo(a1[0], a1[1]);
         const f = (i + 1) / N, a = p.a * f * f;
-        ctx.strokeStyle = `rgba(${BLUE[0]},${BLUE[1]},${BLUE[2]},${a * 0.22})`; ctx.lineWidth = 8; ctx.stroke();
-        ctx.strokeStyle = `rgba(${CORE[0]},${CORE[1]},${CORE[2]},${a})`; ctx.lineWidth = 1.7; ctx.stroke();
+        ctx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a * 0.28})`;
+        ctx.lineWidth = 9;
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(${CORE[0]},${CORE[1]},${CORE[2]},${a})`;
+        ctx.lineWidth = 2.0;
+        ctx.stroke();
       }
       if (p.s < tr.len) {
         const h = pointAt(tr, head);
-        ctx.globalAlpha = p.a; ctx.drawImage(S.glow, h[0] - 22, h[1] - 22, 44, 44); ctx.globalAlpha = 1;
+        ctx.globalAlpha = p.a;
+        ctx.drawImage(tr.cyan ? S.glowCyan : S.glow, h[0] - 24, h[1] - 24, 48, 48);
+        ctx.globalAlpha = 1;
       }
     }
-    // pads flash on arrival
+
+    // Terminal via pads flash on pulse arrival
     for (const tr of world.traces) {
       if (tr.pad <= 0.01) continue;
-      const e = tr.pts[tr.pts.length - 1], a = tr.pad * tr.pad, r = 18 + 30 * (1 - tr.pad);
-      ctx.globalAlpha = a; ctx.drawImage(S.glow, e[0] - r, e[1] - r, r * 2, r * 2);
+      const e = tr.pts[tr.pts.length - 1], a = tr.pad * tr.pad, r = 20 + 32 * (1 - tr.pad);
+      ctx.globalAlpha = a;
+      ctx.drawImage(tr.cyan ? S.glowCyan : S.glow, e[0] - r, e[1] - r, r * 2, r * 2);
       ctx.globalAlpha = 1;
     }
 
-    // ambient LED strip with occasional scan
+    // Lower ambient LED power bar + scanning light head
     const sl = world.stripX1 - world.stripX0;
-    ctx.globalAlpha = 0.6 + 0.18 * Math.sin(t * 0.3 + 1.3);
+    ctx.globalAlpha = 0.72 + 0.18 * Math.sin(t * 0.35 + 1.3);
     ctx.drawImage(S.strip, world.stripX0 - 80, world.stripY - 40, sl + 160, 80);
     ctx.globalAlpha = 1;
     if (world.scan) {
       const sc = world.scan, q = sc.dir > 0 ? sc.p : 1 - sc.p;
       const x = world.stripX0 + sl * (0.08 + 0.84 * q), env = Math.sin(Math.PI * sc.p);
-      const g = ctx.createRadialGradient(x, world.stripY, 0, x, world.stripY, 160);
-      g.addColorStop(0, `rgba(150,195,255,${0.55 * env})`); g.addColorStop(0.3, `rgba(60,120,255,${0.18 * env})`);
+      const g = ctx.createRadialGradient(x, world.stripY, 0, x, world.stripY, 180);
+      g.addColorStop(0, `rgba(170,220,255,${0.65 * env})`);
+      g.addColorStop(0.3, `rgba(74,140,255,${0.22 * env})`);
       g.addColorStop(1, 'rgba(40,90,255,0)');
-      ctx.save(); ctx.translate(x, world.stripY); ctx.scale(1, 0.12); ctx.translate(-x, -world.stripY);
-      ctx.fillStyle = g; ctx.fillRect(x - 160, world.stripY - 160, 320, 320); ctx.restore();
-      ctx.globalAlpha = env; ctx.drawImage(S.glow, x - 16, world.stripY - 16, 32, 32); ctx.globalAlpha = 1;
+      ctx.save();
+      ctx.translate(x, world.stripY);
+      ctx.scale(1, 0.14);
+      ctx.translate(-x, -world.stripY);
+      ctx.fillStyle = g;
+      ctx.fillRect(x - 180, world.stripY - 180, 360, 360);
+      ctx.restore();
+      ctx.globalAlpha = env;
+      ctx.drawImage(S.glowCyan, x - 18, world.stripY - 18, 36, 36);
+      ctx.globalAlpha = 1;
     }
 
-    // motes
+    // Floating micro-motes
     for (const m of world.motes) {
       const a = m.b * (0.5 + 0.5 * Math.sin(t * m.f + m.ph));
       if (a < 0.04) continue;
-      ctx.fillStyle = `rgba(150,190,255,${a})`;
+      ctx.fillStyle = `rgba(155,205,255,${a})`;
       ctx.fillRect(m.x - m.r, m.y - m.r, m.r * 2, m.r * 2);
     }
     ctx.globalCompositeOperation = 'source-over';

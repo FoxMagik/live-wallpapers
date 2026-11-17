@@ -120,26 +120,25 @@ const LW = (() => {
 })();
 // ============================== end runtime =================================
 
-// ---- scene: Synthwave ---------------------------------------------------------
-// Striped retro sun sinking behind neon wireframe mountains, a perspective grid
-// floor rolling toward the viewer, twinkling stars and palm silhouettes.
-// Random sim-time events: shooting stars, light streaks racing along the
-// horizon, neon flicker of the horizon line, rare VHS tracking glitches.
+// ---- scene: Synthwave ------------------------------------------------------
+// 80s Outrun sunset: giant segmented neon sun sinking behind a distant
+// synth-city skyline and low-poly faceted wireframe mountains, a central
+// highway flanked by a scrolling laser grid, graceful palm silhouettes with
+// individual drooping leaflets, shooting stars, and horizon light-streaks.
 const { VW, VH, rand, range, pick, after, every } = LW;
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
-const H0 = 668;                 // horizon line
-const GF = VH - H0;             // floor depth in px (z = 1 at the bottom edge)
-const SUN_X = 960, SUN_R = 262, SUN_Y0 = 448;
-const COL = {
-  pink: '#ff2e97', pinkHi: '#ff7cc4', cyan: '#2de2e6', blue: '#3d6bff',
-  violet: '#b44bff', night: '#0b0220',
-};
+const H0 = 664;                 // horizon line
+const GF = VH - H0;             // floor height in px
+const SUN_X = 960, SUN_R = 268, SUN_Y0 = 442;
+const ROAD_W = 0.56 * GF;       // half-width of the central Outrun highway at z=1
 
-const L = {};                   // pre-rendered layers
-let PS = 1;                     // pre-render scale (virtual px -> canvas px)
+const L = {};
+let PS = 1;
 const S = {
   stars: [], bright: [], shoot: [], cars: [], clouds: [],
-  ridgeBack: null, ridgeFront: null,
+  meshBack: null, meshFront: null, city: [],
   flick: 0, flickVal: 1, vhs: null, sunY: SUN_Y0,
 };
 
@@ -151,73 +150,144 @@ function mk(w, h, scale = PS) {
   g.scale(scale, scale);
   return [c, g];
 }
-const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+function mkRng(s) {
+  s >>>= 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const ss = (a, b, x) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
 
-// ---- generation (seeded, in init) -------------------------------------------
-function makeRidge(env, amp, rough) {
-  const N = 256, h = new Array(N + 1).fill(0);
-  h[0] = range(-1, 1) * amp; h[N] = range(-1, 1) * amp;
-  for (let step = N, a = amp; step > 1; step >>= 1, a *= rough) {
-    for (let i = step >> 1; i < N; i += step) {
-      h[i] = (h[i - (step >> 1)] + h[i + (step >> 1)]) / 2 + range(-1, 1) * a;
-    }
-  }
-  const pts = [];
-  for (let i = 0; i <= N; i++) {
-    const x = -60 + (VW + 120) * i / N;
+// ---------------------------------------------------------------------------
+// Seeded geometry generation (in init)
+// ---------------------------------------------------------------------------
+function makeFacetedRange(cols, rows, envFn, amp, seedOff) {
+  const R = mkRng(seedOff);
+  // 1D jagged ridge profile
+  const ridge = [];
+  for (let i = 0; i <= cols; i++) {
+    const u = i / cols;
+    const x = -80 + (VW + 160) * u;
     const d = Math.abs(x - SUN_X) / 960;
-    const e = env(d);
-    pts.push([x, Math.max(6, e.base + h[i] * e.k)]);
+    const e = envFn(d);
+    const n =
+      Math.sin(u * 19 + R() * 0.5) * 0.45 +
+      Math.cos(u * 41 + 1.3) * 0.30 +
+      (R() - 0.48) * 0.55;
+    const h = Math.max(4, e.base + Math.abs(n) * amp * e.k);
+    ridge.push([x, h]);
   }
-  return pts;
+  // Build 2D triangulated grid from ridge (row=0) down to horizon (row=rows)
+  const grid = [];
+  for (let r = 0; r <= rows; r++) {
+    const v = r / rows; // 0 at peak, 1 at base (H0)
+    const rowPts = [];
+    for (let i = 0; i <= cols; i++) {
+      const [rx, rh] = ridge[i];
+      const pull = 1 - 0.05 * v;
+      const jx = (r > 0 && r < rows && i > 0 && i < cols) ? (R() - 0.5) * 22 : 0;
+      const jy = (r > 0 && r < rows) ? (R() - 0.5) * rh * 0.09 : 0;
+      const px = SUN_X + (rx - SUN_X) * pull + jx;
+      const py = H0 - rh * Math.pow(1 - v, 1.18) + jy;
+      rowPts.push([px, Math.min(H0 + 2, py)]);
+    }
+    grid.push(rowPts);
+  }
+  return { ridge, grid, cols, rows };
+}
+
+function genCity() {
+  const R = mkRng(88421);
+  // Silhouette skyline nestled in the central valley (x = 700..1220)
+  for (let x = 710; x < 1210; ) {
+    const d = Math.abs(x - SUN_X) / 250;
+    const env = Math.max(0, 1 - d * d * 0.88);
+    const w = 16 + R() * 26;
+    const h = 18 + (0.35 + 0.65 * R()) * env * 96;
+    const spire = R() < 0.35 && d < 0.55;
+    const pyr = !spire && R() < 0.18 && d < 0.45;
+    S.city.push({ x, w, h, spire, pyr, seed: Math.floor(R() * 1e9) });
+    x += w * (0.68 + R() * 0.28);
+  }
 }
 
 function genStars() {
-  for (let i = 0; i < 230; i++) {
-    const y = 44 + (H0 - 120) * Math.pow(rand(), 1.5);
+  for (let i = 0; i < 260; i++) {
+    const y = 30 + (H0 - 110) * Math.pow(rand(), 1.55);
     S.stars.push({
-      x: range(0, VW), y, s: range(0.9, 2.1), a: range(0.35, 0.95) * (1 - 0.75 * ss(250, H0 - 80, y)),
-      w: range(0.4, 2.2), p: range(0, 6.28), c: rand() < 0.7 ? 0 : (rand() < 0.5 ? 1 : 2),
+      x: range(0, VW), y,
+      s: range(0.9, 2.2),
+      a: range(0.38, 0.98) * (1 - 0.78 * ss(240, H0 - 70, y)),
+      w: range(0.4, 2.2), p: range(0, TAU),
+      c: rand() < 0.68 ? 0 : rand() < 0.5 ? 1 : 2,
     });
   }
-  for (let i = 0; i < 9; i++) {
-    S.bright.push({ x: range(160, VW - 160), y: range(60, 330), r: range(5, 10), w: range(0.3, 0.9), p: range(0, 6.28) });
+  for (let i = 0; i < 12; i++) {
+    S.bright.push({
+      x: range(120, VW - 120), y: range(48, 320),
+      r: range(6, 12), w: range(0.35, 0.95), p: range(0, TAU),
+    });
   }
 }
 
 function genClouds() {
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     const bars = [];
     const n = 2 + Math.floor(rand() * 3);
-    const w = range(380, 680);
+    const w = range(380, 660);
     for (let j = 0; j < n; j++) {
-      bars.push({ x: range(0, w * 0.35), y: j * range(8, 12), w: range(w * 0.45, w * 0.95), h: range(3, 6) });
+      bars.push({
+        x: range(0, w * 0.32),
+        y: j * range(8, 12),
+        w: range(w * 0.45, w * 0.92),
+        h: range(3.5, 6.5),
+      });
     }
-    S.clouds.push({ bars, w, x: range(-200, VW), y: range(250, 560), v: range(3, 7) * (i % 2 ? 1 : -1) });
+    S.clouds.push({
+      bars, w,
+      x: range(-180, VW - 200),
+      y: range(230, 520),
+      v: range(3.5, 7.5) * (i % 2 ? 1 : -1),
+    });
   }
 }
 
-// ---- pre-rendering (in resize) ----------------------------------------------
+// ---------------------------------------------------------------------------
+// Pre-rendering (in resize)
+// ---------------------------------------------------------------------------
 function renderSky() {
   const [c, g] = mk(VW, H0 + 4);
   const gr = g.createLinearGradient(0, 0, 0, H0);
-  gr.addColorStop(0.00, '#05011a');
-  gr.addColorStop(0.32, '#140636');
-  gr.addColorStop(0.62, '#2e0b55');
-  gr.addColorStop(0.82, '#5c1170');
-  gr.addColorStop(0.95, '#a8237e');
-  gr.addColorStop(1.00, '#e8448f');
-  g.fillStyle = gr; g.fillRect(0, 0, VW, H0 + 4);
-  // faint nebula wisps
+  gr.addColorStop(0.00, '#040114');
+  gr.addColorStop(0.28, '#110530');
+  gr.addColorStop(0.55, '#2b0952');
+  gr.addColorStop(0.76, '#5c1070');
+  gr.addColorStop(0.91, '#b02080');
+  gr.addColorStop(1.00, '#ff4896');
+  g.fillStyle = gr;
+  g.fillRect(0, 0, VW, H0 + 4);
+
   const blob = (x, y, rx, ry, col, a) => {
-    g.save(); g.translate(x, y); g.scale(rx / 100, ry / 100);
+    g.save();
+    g.translate(x, y);
+    g.scale(rx / 100, ry / 100);
     const r = g.createRadialGradient(0, 0, 0, 0, 0, 100);
-    r.addColorStop(0, `rgba(${col},${a})`); r.addColorStop(1, `rgba(${col},0)`);
-    g.fillStyle = r; g.fillRect(-100, -100, 200, 200); g.restore();
+    r.addColorStop(0, `rgba(${col},${a})`);
+    r.addColorStop(1, `rgba(${col},0)`);
+    g.fillStyle = r;
+    g.fillRect(-100, -100, 200, 200);
+    g.restore();
   };
-  blob(420, 190, 520, 140, '61,107,255', 0.10);
-  blob(1500, 140, 600, 130, '180,75,255', 0.10);
-  blob(960, 330, 900, 200, '255,46,151', 0.06);
+  blob(380, 180, 540, 150, '45,226,230', 0.09);
+  blob(1540, 150, 580, 140, '180,75,255', 0.12);
+  blob(960, 380, 920, 240, '255,46,151', 0.14);
   L.sky = c;
 }
 
@@ -225,36 +295,41 @@ function renderSun() {
   const D = SUN_R * 2;
   const [c, g] = mk(D, D);
   const gr = g.createLinearGradient(0, 0, 0, D);
-  gr.addColorStop(0.00, '#fff27a');
-  gr.addColorStop(0.30, '#ffc94a');
-  gr.addColorStop(0.55, '#ff8a3d');
-  gr.addColorStop(0.78, '#ff3d7f');
-  gr.addColorStop(1.00, '#e0168f');
+  gr.addColorStop(0.00, '#fff799');
+  gr.addColorStop(0.24, '#ffd24c');
+  gr.addColorStop(0.50, '#ff883b');
+  gr.addColorStop(0.74, '#ff3380');
+  gr.addColorStop(1.00, '#d41088');
   g.fillStyle = gr;
-  g.beginPath(); g.arc(SUN_R, SUN_R, SUN_R, 0, Math.PI * 2); g.fill();
+  g.beginPath();
+  g.arc(SUN_R, SUN_R, SUN_R, 0, TAU);
+  g.fill();
   L.sun = c;
 
-  // soft glow, low-res is fine
-  const GW = 1500, GH = 1100;
+  const GW = 1560, GH = 1140;
   const [gc, gg] = mk(GW, GH, Math.max(0.35, PS * 0.5));
-  gg.translate(GW / 2, GH / 2); gg.scale(1, GH / GW);
-  const rg = gg.createRadialGradient(0, 0, SUN_R * 0.6, 0, 0, GW / 2);
-  rg.addColorStop(0, 'rgba(255,90,140,0.55)');
-  rg.addColorStop(0.18, 'rgba(255,60,150,0.30)');
-  rg.addColorStop(0.45, 'rgba(200,40,170,0.10)');
-  rg.addColorStop(1, 'rgba(150,30,170,0)');
-  gg.fillStyle = rg; gg.fillRect(-GW / 2, -GW / 2, GW, GW);
-  L.sunGlow = gc; L.sunGlowW = GW; L.sunGlowH = GH;
+  gg.translate(GW / 2, GH / 2);
+  gg.scale(1, GH / GW);
+  const rg = gg.createRadialGradient(0, 0, SUN_R * 0.5, 0, 0, GW / 2);
+  rg.addColorStop(0.00, 'rgba(255,140,120,0.62)');
+  rg.addColorStop(0.20, 'rgba(255,65,155,0.34)');
+  rg.addColorStop(0.48, 'rgba(195,40,180,0.12)');
+  rg.addColorStop(1.00, 'rgba(140,25,170,0)');
+  gg.fillStyle = rg;
+  gg.fillRect(-GW / 2, -GW / 2, GW, GW);
+  L.sunGlow = gc;
+  L.sunGlowW = GW;
+  L.sunGlowH = GH;
 }
 
 function renderClouds() {
-  L.clouds = S.clouds.map(cl => {
+  L.clouds = S.clouds.map((cl) => {
     const h = cl.bars.reduce((m, b) => Math.max(m, b.y + b.h), 0) + 6;
     const [c, g] = mk(cl.w + 10, h);
     for (const b of cl.bars) {
-      g.fillStyle = 'rgba(255,90,170,0.35)';     // lit underside
+      g.fillStyle = 'rgba(255,105,180,0.42)';
       g.beginPath(); g.roundRect(b.x + 3, b.y + 2, b.w, b.h, b.h / 2); g.fill();
-      g.fillStyle = 'rgba(46,10,84,0.78)';
+      g.fillStyle = 'rgba(38,8,72,0.82)';
       g.beginPath(); g.roundRect(b.x, b.y, b.w, b.h, b.h / 2); g.fill();
     }
     return { c, w: cl.w + 10, h };
@@ -262,188 +337,405 @@ function renderClouds() {
 }
 
 function renderMountains() {
-  const top = 300, H = H0 - top + 2;
+  const top = 280, H = H0 - top + 2;
   const [c, g] = mk(VW, H);
   g.translate(0, -top);
-  const layer = (pts, fillTop, fillBot, line, wire, glow) => {
-    const path = new Path2D();
-    path.moveTo(pts[0][0], H0 + 2);
-    for (const [x, h] of pts) path.lineTo(x, H0 - h);
-    path.lineTo(pts[pts.length - 1][0], H0 + 2); path.closePath();
-    let maxH = 0; for (const p of pts) maxH = Math.max(maxH, p[1]);
-    const gr = g.createLinearGradient(0, H0 - maxH, 0, H0);
-    gr.addColorStop(0, fillTop); gr.addColorStop(1, fillBot);
-    g.fillStyle = gr; g.fill(path);
-    // wireframe inside the silhouette
-    g.save(); g.clip(path);
-    g.strokeStyle = wire; g.lineWidth = 1;
-    g.beginPath();
-    for (const f of [0.22, 0.45, 0.68, 0.86]) {
-      pts.forEach(([x, h], i) => {
-        const px = SUN_X + (x - SUN_X) * (1 - 0.06 * (1 - f)), py = H0 - h * f;
-        i ? g.lineTo(px, py) : g.moveTo(px, py);
-      });
+
+  // 1. Distant synth-city skyline at the center horizon gap (in front of sun)
+  for (const b of S.city) {
+    const y0 = H0 - b.h;
+    g.fillStyle = '#180536';
+    if (b.pyr) {
+      g.beginPath();
+      g.moveTo(b.x - 4, H0 + 1);
+      g.lineTo(b.x + b.w / 2, y0);
+      g.lineTo(b.x + b.w + 4, H0 + 1);
+      g.closePath();
+      g.fill();
+      g.strokeStyle = 'rgba(255,90,185,0.45)';
+      g.lineWidth = 1;
+      g.stroke();
+    } else {
+      g.fillRect(b.x, y0, b.w, b.h + 1);
+      g.fillStyle = 'rgba(255,110,195,0.42)';
+      g.fillRect(b.x, y0, b.w, 1.2);
+      if (b.spire) {
+        g.fillStyle = '#24084a';
+        g.fillRect(b.x + b.w * 0.25, y0 - 8, b.w * 0.5, 8);
+        g.fillStyle = 'rgba(45,226,230,0.7)';
+        g.fillRect(b.x + b.w / 2 - 0.8, y0 - 24, 1.6, 16);
+      }
+      // Tiny glowing synth-city windows
+      const R = mkRng(b.seed);
+      for (let wy = y0 + 5; wy < H0 - 6; wy += 5) {
+        for (let wx = b.x + 3; wx < b.x + b.w - 4; wx += 4) {
+          if (R() < 0.22) {
+            g.fillStyle = R() < 0.65 ? 'rgba(255,95,190,0.55)' : 'rgba(45,226,230,0.55)';
+            g.fillRect(wx, wy, 2, 2.2);
+          }
+        }
+      }
     }
-    for (let i = 0; i < pts.length; i += 4) {
-      const [x, h] = pts[i];
-      if (h < 14) continue;
-      g.moveTo(x, H0 - h);
-      g.lineTo(SUN_X + (x - SUN_X) * 0.94, H0);
+  }
+
+  // 2. Helper to draw a triangulated low-poly wireframe mountain range
+  const drawMesh = (mesh, pal) => {
+    const { ridge, grid, cols, rows } = mesh;
+    // Clip silhouette
+    const sil = new Path2D();
+    sil.moveTo(ridge[0][0], H0 + 2);
+    for (const [x, h] of ridge) sil.lineTo(x, H0 - h);
+    sil.lineTo(ridge[ridge.length - 1][0], H0 + 2);
+    sil.closePath();
+
+    g.fillStyle = pal.base;
+    g.fill(sil);
+
+    g.save();
+    g.clip(sil);
+    g.lineJoin = 'bevel';
+    const wire = new Path2D();
+
+    for (let r = 0; r < rows; r++) {
+      for (let i = 0; i < cols; i++) {
+        const p00 = grid[r][i], p10 = grid[r][i + 1];
+        const p01 = grid[r + 1][i], p11 = grid[r + 1][i + 1];
+        const tris = (i + r) % 2 === 0
+          ? [[p00, p10, p11], [p00, p11, p01]]
+          : [[p00, p10, p01], [p10, p11, p01]];
+
+        for (const [a, b, d] of tris) {
+          const cx = (a[0] + b[0] + d[0]) / 3;
+          const cy = (a[1] + b[1] + d[1]) / 3;
+          if (cy > H0 + 1) continue;
+          // Shade facet based on whether it slopes toward the center sun
+          const slope = (b[1] - a[1]) * (cx < SUN_X ? 1 : -1);
+          const sunProximity = Math.exp(-(((cx - SUN_X) / 520) ** 2));
+          const lit = clamp(0.25 + slope * 0.012 + sunProximity * 0.35 - (r / rows) * 0.15, 0.05, 0.92);
+
+          g.beginPath();
+          g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.lineTo(d[0], d[1]);
+          g.closePath();
+          g.fillStyle = pal.face(lit);
+          g.fill();
+
+          wire.moveTo(a[0], a[1]); wire.lineTo(b[0], b[1]); wire.lineTo(d[0], d[1]); wire.closePath();
+        }
+      }
     }
-    g.stroke();
+    g.strokeStyle = pal.wireGlow;
+    g.lineWidth = 3.2;
+    g.stroke(wire);
+    g.strokeStyle = pal.wire;
+    g.lineWidth = 1.1;
+    g.stroke(wire);
+
+    // Valley mist at the base of the range
+    const mg = g.createLinearGradient(0, H0 - 75, 0, H0 + 2);
+    mg.addColorStop(0, 'rgba(42,8,72,0)');
+    mg.addColorStop(1, pal.mist);
+    g.fillStyle = mg;
+    g.fillRect(0, H0 - 75, VW, 78);
     g.restore();
-    // glowing ridge line
+
+    // Glowing neon ridge crest
     g.beginPath();
-    pts.forEach(([x, h], i) => i ? g.lineTo(x, H0 - h) : g.moveTo(x, H0 - h));
-    g.strokeStyle = line; g.lineJoin = 'round';
-    g.shadowColor = glow; g.shadowBlur = 14; g.lineWidth = 2.2; g.stroke();
-    g.shadowBlur = 0; g.lineWidth = 1.2; g.strokeStyle = 'rgba(255,255,255,0.55)'; g.stroke();
+    ridge.forEach(([x, h], i) => (i ? g.lineTo(x, H0 - h) : g.moveTo(x, H0 - h)));
+    g.strokeStyle = pal.crest;
+    g.shadowColor = pal.shadow;
+    g.shadowBlur = 14;
+    g.lineWidth = 2.4;
+    g.stroke();
+    g.shadowBlur = 0;
+    g.strokeStyle = 'rgba(255,255,255,0.68)';
+    g.lineWidth = 1.1;
+    g.stroke();
   };
-  layer(S.ridgeBack, '#2a0b58', '#3a0e60', 'rgba(180,75,255,0.9)', 'rgba(180,75,255,0.28)', '#b44bff');
-  layer(S.ridgeFront, '#12042c', '#1c0638', 'rgba(45,226,230,0.95)', 'rgba(45,226,230,0.22)', '#2de2e6');
-  L.mtn = c; L.mtnTop = top; L.mtnH = H;
+
+  drawMesh(S.meshBack, {
+    base: '#1c063b',
+    face: (l) => `rgba(${Math.round(32 + l * 85)},${Math.round(8 + l * 22)},${Math.round(68 + l * 90)},0.92)`,
+    wireGlow: 'rgba(255,46,151,0.16)',
+    wire: 'rgba(220,90,255,0.42)',
+    crest: 'rgba(235,110,255,0.95)',
+    shadow: '#ff2e97',
+    mist: 'rgba(110,20,130,0.48)',
+  });
+
+  drawMesh(S.meshFront, {
+    base: '#0d0322',
+    face: (l) => `rgba(${Math.round(14 + l * 28)},${Math.round(8 + l * 65)},${Math.round(44 + l * 85)},0.95)`,
+    wireGlow: 'rgba(45,226,230,0.16)',
+    wire: 'rgba(45,226,230,0.45)',
+    crest: 'rgba(95,245,250,0.98)',
+    shadow: '#2de2e6',
+    mist: 'rgba(55,12,85,0.55)',
+  });
+
+  L.mtn = c;
+  L.mtnTop = top;
+  L.mtnH = H;
 }
 
 function renderFloor() {
   const [c, g] = mk(VW, GF);
   const gr = g.createLinearGradient(0, 0, 0, GF);
-  gr.addColorStop(0, '#2a0748'); gr.addColorStop(0.35, '#14032c'); gr.addColorStop(1, '#07010f');
-  g.fillStyle = gr; g.fillRect(0, 0, VW, GF);
-  // sun reflection
-  g.save(); g.translate(SUN_X, 0); g.scale(1, 0.32);
-  const rg = g.createRadialGradient(0, 0, 0, 0, 0, 560);
-  rg.addColorStop(0, 'rgba(255,70,150,0.42)'); rg.addColorStop(0.5, 'rgba(255,46,151,0.12)'); rg.addColorStop(1, 'rgba(255,46,151,0)');
-  g.fillStyle = rg; g.fillRect(-560, 0, 1120, 560); g.restore();
+  gr.addColorStop(0.00, '#2c074a');
+  gr.addColorStop(0.32, '#14032c');
+  gr.addColorStop(1.00, '#06010e');
+  g.fillStyle = gr;
+  g.fillRect(0, 0, VW, GF);
+
+  // Sun reflection across the grid floor
+  g.save();
+  g.translate(SUN_X, 0);
+  g.scale(1, 0.34);
+  const rg = g.createRadialGradient(0, 0, 0, 0, 0, 580);
+  rg.addColorStop(0.0, 'rgba(255,80,160,0.45)');
+  rg.addColorStop(0.5, 'rgba(255,46,151,0.14)');
+  rg.addColorStop(1.0, 'rgba(255,46,151,0)');
+  g.fillStyle = rg;
+  g.fillRect(-580, 0, 1160, 580);
+  g.restore();
+
+  // Central perspective Outrun highway surface (dark reflective asphalt)
+  g.beginPath();
+  g.moveTo(SUN_X - ROAD_W * (6 / GF), 0);
+  g.lineTo(SUN_X + ROAD_W * (6 / GF), 0);
+  g.lineTo(SUN_X + ROAD_W * 1.15, GF);
+  g.lineTo(SUN_X - ROAD_W * 1.15, GF);
+  g.closePath();
+  const rgr = g.createLinearGradient(0, 0, 0, GF);
+  rgr.addColorStop(0, '#1c0533');
+  rgr.addColorStop(0.4, '#0c021c');
+  rgr.addColorStop(1, '#05010c');
+  g.fillStyle = rgr;
+  g.fill();
+
+  // Warm sunset reflection shimmer down the middle of the highway
+  const sgr = g.createLinearGradient(SUN_X - 120, 0, SUN_X + 120, 0);
+  sgr.addColorStop(0, 'rgba(255,70,155,0)');
+  sgr.addColorStop(0.5, 'rgba(255,110,175,0.22)');
+  sgr.addColorStop(1, 'rgba(255,70,155,0)');
+  g.fillStyle = sgr;
+  g.fill();
   L.floor = c;
 
-  // vertical grid lines never move: pre-render them once (drawn additively with flicker alpha)
+  // Pre-rendered perspective radial grid lines + glowing cyan highway shoulders
   const [vc, vg] = mk(VW, GF);
-  const XS = 0.42 * GF;
+  const XS = 0.38 * GF;
+  vg.globalCompositeOperation = 'lighter';
   vg.beginPath();
-  for (let i = -46; i <= 46; i++) {
+  for (let i = -48; i <= 48; i++) {
+    if (i === 0 || i === -1 || i === 1) continue; // leave central highway clear
     const bx = i * XS;
     vg.moveTo(SUN_X + bx * (8 / GF), 8);
     vg.lineTo(SUN_X + bx * 1.25, GF * 1.25);
   }
-  vg.globalCompositeOperation = 'lighter';
-  vg.strokeStyle = 'rgba(255,46,151,0.16)'; vg.lineWidth = 7; vg.stroke();
-  vg.strokeStyle = 'rgba(255,90,180,0.75)'; vg.lineWidth = 1.6; vg.stroke();
+  vg.strokeStyle = 'rgba(255,46,151,0.18)';
+  vg.lineWidth = 7;
+  vg.stroke();
+  vg.strokeStyle = 'rgba(255,95,185,0.78)';
+  vg.lineWidth = 1.6;
+  vg.stroke();
+
+  // Glowing electric-cyan highway shoulder rails
+  vg.beginPath();
+  for (const s of [-1, 1]) {
+    const bx = s * ROAD_W;
+    vg.moveTo(SUN_X + bx * (8 / GF), 8);
+    vg.lineTo(SUN_X + bx * 1.25, GF * 1.25);
+  }
+  vg.strokeStyle = 'rgba(45,226,230,0.28)';
+  vg.lineWidth = 9;
+  vg.stroke();
+  vg.strokeStyle = 'rgba(160,252,255,0.92)';
+  vg.lineWidth = 2.2;
+  vg.stroke();
   L.vgrid = vc;
 
-  // haze that hides the dense far grid
-  const HZ = 150;
+  // Horizon distance haze
+  const HZ = 145;
   const [hc, hg] = mk(VW, HZ);
   const hgr = hg.createLinearGradient(0, 0, 0, HZ);
-  hgr.addColorStop(0, 'rgba(70,12,96,1)');
-  hgr.addColorStop(0.12, 'rgba(52,9,84,0.85)');
-  hgr.addColorStop(0.45, 'rgba(36,6,66,0.3)');
-  hgr.addColorStop(1, 'rgba(30,5,60,0)');
-  hg.fillStyle = hgr; hg.fillRect(0, 0, VW, HZ);
-  L.haze = hc; L.hazeH = HZ;
+  hgr.addColorStop(0.00, 'rgba(72,12,98,0.95)');
+  hgr.addColorStop(0.16, 'rgba(52,9,84,0.75)');
+  hgr.addColorStop(0.48, 'rgba(36,6,66,0.25)');
+  hgr.addColorStop(1.00, 'rgba(30,5,60,0)');
+  hg.fillStyle = hgr;
+  hg.fillRect(0, 0, VW, HZ);
+  L.haze = hc;
+  L.hazeH = HZ;
 
-  // horizon glow band
-  const BH = 70;
+  // Horizon neon bloom band
+  const BH = 76;
   const [bc, bg] = mk(VW, BH);
   const bgr = bg.createLinearGradient(0, 0, 0, BH);
-  bgr.addColorStop(0, 'rgba(255,46,151,0)'); bgr.addColorStop(0.5, 'rgba(255,80,170,0.55)'); bgr.addColorStop(1, 'rgba(255,46,151,0)');
-  bg.fillStyle = bgr; bg.fillRect(0, 0, VW, BH);
-  // fade the band towards the sides
+  bgr.addColorStop(0.0, 'rgba(255,46,151,0)');
+  bgr.addColorStop(0.5, 'rgba(255,90,180,0.62)');
+  bgr.addColorStop(1.0, 'rgba(255,46,151,0)');
+  bg.fillStyle = bgr;
+  bg.fillRect(0, 0, VW, BH);
   bg.globalCompositeOperation = 'destination-in';
   const side = bg.createLinearGradient(0, 0, VW, 0);
-  side.addColorStop(0, 'rgba(0,0,0,0.35)'); side.addColorStop(0.5, 'rgba(0,0,0,1)'); side.addColorStop(1, 'rgba(0,0,0,0.35)');
-  bg.fillStyle = side; bg.fillRect(0, 0, VW, BH);
-  L.band = bc; L.bandH = BH;
+  side.addColorStop(0.0, 'rgba(0,0,0,0.35)');
+  side.addColorStop(0.5, 'rgba(0,0,0,1)');
+  side.addColorStop(1.0, 'rgba(0,0,0,0.35)');
+  bg.fillStyle = side;
+  bg.fillRect(0, 0, VW, BH);
+  L.band = bc;
+  L.bandH = BH;
 }
 
-function drawPalm(g, bx, by, H, lean, fs, fronds) {
+// ---------------------------------------------------------------------------
+// Graceful tropical palm renderer with individual drooping curved leaflets
+// ---------------------------------------------------------------------------
+function drawPalm(g, bx, by, H, lean, fs, fronds, rimSide) {
   const tx = bx + lean, ty = by - H;
-  const cx = bx + lean * 0.15, cy = by - H * 0.55;
+  const cx = bx + lean * 0.18, cy = by - H * 0.55;
   const P = (s) => {
     const a = (1 - s) * (1 - s), b = 2 * (1 - s) * s, c2 = s * s;
     return [a * bx + b * cx + c2 * tx, a * by + b * cy + c2 * ty];
   };
-  // trunk
+
+  // Segmented curved trunk
   const L1 = [], R1 = [];
-  const N = 40;
+  const N = 44;
   for (let i = 0; i <= N; i++) {
-    const s = i / N, [x, y] = P(s), [x2, y2] = P(Math.min(1, s + 0.01)), [x0, y0] = P(Math.max(0, s - 0.01));
-    let dx = x2 - x0, dy = y2 - y0; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
-    const ring = (i % 3 === 0) ? 1.6 * fs : 0;
-    const w = (13 - 6 * s) * fs + ring;
-    L1.push([x - dy * w, y + dx * w]); R1.push([x + dy * w, y - dx * w]);
+    const s = i / N;
+    const [x, y] = P(s);
+    const [x2, y2] = P(Math.min(1, s + 0.01));
+    const [x0, y0] = P(Math.max(0, s - 0.01));
+    let dx = x2 - x0, dy = y2 - y0;
+    const l = Math.hypot(dx, dy) || 1;
+    dx /= l; dy /= l;
+    const ring = (i % 2 === 0) ? 1.4 * fs : 0;
+    const w = (14.5 - 7.5 * Math.pow(s, 0.85)) * fs + ring;
+    L1.push([x - dy * w, y + dx * w]);
+    R1.push([x + dy * w, y - dx * w]);
   }
   g.beginPath();
-  L1.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+  L1.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
   for (let i = R1.length - 1; i >= 0; i--) g.lineTo(R1[i][0], R1[i][1]);
-  g.closePath(); g.fill();
-  // fronds
+  g.closePath();
+  const tgr = g.createLinearGradient(bx - 30, 0, bx + 30, 0);
+  if (rimSide > 0) {
+    tgr.addColorStop(0, '#07010f');
+    tgr.addColorStop(0.75, '#120322');
+    tgr.addColorStop(1, '#58124d');
+  } else {
+    tgr.addColorStop(0, '#58124d');
+    tgr.addColorStop(0.25, '#120322');
+    tgr.addColorStop(1, '#07010f');
+  }
+  g.fillStyle = tgr;
+  g.fill();
+
+  // Fronds: curved central spine + individual slender drooping leaflets
   g.lineCap = 'round';
   for (const f of fronds) {
-    const a = f.a * Math.PI / 180, len = f.l * fs;
+    const a = (f.a * Math.PI) / 180;
+    const len = f.l * fs;
     const dirx = Math.cos(a), diry = Math.sin(a);
-    const pt = (s) => [tx + dirx * s * len, ty + diry * s * len + f.d * s * s * len];
-    const M = 64, W = 36 * fs;
-    const P0 = [], P1 = [];
-    for (let i = 0; i <= M; i++) {
-      const s = i / M, p = pt(s), q = pt(Math.min(1, s + 0.02)), o = pt(Math.max(0, s - 0.02));
-      let dx = q[0] - o[0], dy = q[1] - o[1]; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
-      const w = Math.pow(Math.sin(Math.PI * Math.min(1, 0.08 + s * 0.92)), 0.7) * W;
-      const tooth = (i % 2) ? 1 : 0.28;
+    const pt = (s) => [
+      tx + dirx * s * len,
+      ty + diry * s * len + f.d * s * s * len,
+    ];
+
+    // Rim highlight on upper edge of rachis spine
+    g.beginPath();
+    for (let i = 0; i <= 28; i++) {
+      const [px, py] = pt(i / 28);
+      i ? g.lineTo(px, py - 1.4) : g.moveTo(px, py - 1.4);
+    }
+    g.strokeStyle = 'rgba(255,95,180,0.45)';
+    g.lineWidth = 2.6 * fs;
+    g.stroke();
+
+    // Main dark rachis spine
+    g.beginPath();
+    for (let i = 0; i <= 28; i++) {
+      const [px, py] = pt(i / 28);
+      i ? g.lineTo(px, py) : g.moveTo(px, py);
+    }
+    g.strokeStyle = '#07010f';
+    g.lineWidth = 3.4 * fs;
+    g.stroke();
+
+    // Individual curved leaflets along both sides of the spine
+    const steps = 38;
+    g.fillStyle = '#07010f';
+    for (let i = 2; i < steps; i++) {
+      const s = i / steps;
+      const p = pt(s);
+      const q = pt(Math.min(1, s + 0.025));
+      let tx0 = q[0] - p[0], ty0 = q[1] - p[1];
+      const tl = Math.hypot(tx0, ty0) || 1;
+      tx0 /= tl; ty0 /= tl;
+      const env = Math.sin(Math.PI * Math.pow(s, 0.75));
+      const leafLen = (18 + 42 * env) * fs;
+
       for (const side of [-1, 1]) {
-        let nx = -dy * side, ny = dx * side;
-        const ww = w * tooth;
-        // leaflets sweep back along the spine and hang down
-        const x = p[0] + nx * ww - dx * ww * 0.5;
-        const y = p[1] + ny * ww - dy * ww * 0.5 + ww * 0.55;
-        (side < 0 ? P0 : P1).push([x, y]);
+        const nx = -ty0 * side, ny = tx0 * side;
+        const mx = p[0] + (nx * 0.74 + tx0 * 0.32) * leafLen * 0.55;
+        const my = p[1] + (ny * 0.74 + ty0 * 0.32) * leafLen * 0.55 + leafLen * 0.18;
+        const ex = p[0] + (nx * 0.56 + tx0 * 0.42) * leafLen;
+        const ey = p[1] + (ny * 0.56 + ty0 * 0.42) * leafLen + leafLen * 0.56;
+        const bw = 3.2 * fs * (1 - s * 0.42);
+
+        g.beginPath();
+        g.moveTo(p[0] - tx0 * bw, p[1] - ty0 * bw);
+        g.quadraticCurveTo(mx, my - bw * 0.6, ex, ey);
+        g.quadraticCurveTo(mx - tx0 * bw * 0.5, my + bw * 0.6, p[0] + tx0 * bw, p[1] + ty0 * bw);
+        g.closePath();
+        g.fill();
       }
     }
-    g.beginPath();
-    P0.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
-    for (let i = P1.length - 1; i >= 0; i--) g.lineTo(P1[i][0], P1[i][1]);
-    g.closePath(); g.fill();
-    g.beginPath();
-    for (let i = 0; i <= M; i++) { const p = pt(i / M); i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }
-    g.lineWidth = 3.5 * fs; g.stroke();
   }
-  // coconuts
+
+  // Coconuts cluster at crown
+  g.fillStyle = '#07010f';
   for (let i = 0; i < 4; i++) {
-    g.beginPath(); g.arc(tx + (i - 1.5) * 9 * fs, ty + 10 * fs + (i % 2) * 6 * fs, 7 * fs, 0, Math.PI * 2); g.fill();
+    g.beginPath();
+    g.arc(tx + (i - 1.5) * 8.5 * fs, ty + 9 * fs + (i % 2) * 5 * fs, 6.5 * fs, 0, TAU);
+    g.fill();
   }
 }
 
 const FRONDS = [
-  { a: -168, l: 250, d: 0.85 }, { a: -142, l: 270, d: 0.75 }, { a: -112, l: 230, d: 0.65 },
-  { a: -84, l: 190, d: 0.85 }, { a: -58, l: 240, d: 0.62 }, { a: -30, l: 275, d: 0.72 },
-  { a: -6, l: 255, d: 0.85 }, { a: 155, l: 200, d: 1.2 }, { a: 25, l: 190, d: 1.2 },
+  { a: -172, l: 255, d: 0.78 }, { a: -146, l: 275, d: 0.68 }, { a: -116, l: 235, d: 0.58 },
+  { a: -86, l: 195, d: 0.72 },  { a: -58, l: 245, d: 0.56 },  { a: -30, l: 280, d: 0.66 },
+  { a: -6, l: 260, d: 0.78 },   { a: 158, l: 205, d: 1.08 },  { a: 22, l: 200, d: 1.08 },
 ];
 const FRONDS2 = [
-  { a: -175, l: 240, d: 0.8 }, { a: -150, l: 255, d: 0.7 }, { a: -120, l: 210, d: 0.75 },
-  { a: -96, l: 180, d: 0.9 }, { a: -66, l: 220, d: 0.65 }, { a: -38, l: 260, d: 0.7 },
-  { a: -12, l: 245, d: 0.85 }, { a: 165, l: 190, d: 1.25 }, { a: 15, l: 200, d: 1.2 },
+  { a: -176, l: 245, d: 0.74 }, { a: -150, l: 260, d: 0.64 }, { a: -120, l: 215, d: 0.66 },
+  { a: -94, l: 185, d: 0.78 },  { a: -66, l: 225, d: 0.58 },  { a: -38, l: 265, d: 0.64 },
+  { a: -12, l: 250, d: 0.78 },  { a: 164, l: 195, d: 1.12 },  { a: 16, l: 205, d: 1.08 },
 ];
 
 function renderPalms() {
   const groups = [
-    { x0: -140, y0: 150, w: 820, h: VH - 150, rim: 1, palms: [
-      { bx: 190, H: 780, lean: 95, fs: 1.0, f: FRONDS },
-      { bx: 420, H: 520, lean: -55, fs: 0.72, f: FRONDS2 },
-      { bx: 40, H: 600, lean: -40, fs: 0.8, f: FRONDS2 },
-    ] },
-    { x0: 1250, y0: 170, w: 810, h: VH - 170, rim: -1, palms: [
-      { bx: 1745, H: 740, lean: -105, fs: 0.95, f: FRONDS2 },
-      { bx: 1540, H: 470, lean: 45, fs: 0.66, f: FRONDS },
-    ] },
+    {
+      x0: -140, y0: 140, w: 820, h: VH - 140, rim: 1,
+      palms: [
+        { bx: 185, H: 785, lean: 92, fs: 1.0, f: FRONDS },
+        { bx: 415, H: 525, lean: -52, fs: 0.72, f: FRONDS2 },
+        { bx: 38, H: 605, lean: -38, fs: 0.80, f: FRONDS2 },
+      ],
+    },
+    {
+      x0: 1250, y0: 160, w: 810, h: VH - 160, rim: -1,
+      palms: [
+        { bx: 1748, H: 745, lean: -102, fs: 0.96, f: FRONDS2 },
+        { bx: 1538, H: 475, lean: 44, fs: 0.67, f: FRONDS },
+      ],
+    },
   ];
-  L.palms = groups.map(G => {
+  L.palms = groups.map((G) => {
     const [c, g] = mk(G.w, G.h);
     g.translate(-G.x0, -G.y0);
-    for (const pass of [0, 1]) {
-      g.save();
-      if (pass === 0) { g.translate(G.rim * 2.5, -1.5); g.fillStyle = g.strokeStyle = 'rgba(255,70,170,0.5)'; }
-      else { g.fillStyle = g.strokeStyle = '#08010f'; }
-      for (const p of G.palms) drawPalm(g, p.bx, VH + 30, p.H + 30, p.lean, p.fs, p.f);
-      g.restore();
+    for (const p of G.palms) {
+      drawPalm(g, p.bx, VH + 30, p.H + 30, p.lean, p.fs, p.f, G.rim);
     }
     return { c, x0: G.x0, y0: G.y0, w: G.w, h: G.h };
   });
@@ -453,67 +745,104 @@ function renderOverlay() {
   const s = Math.min(PS, 2);
   const [c, g] = mk(VW, VH, s);
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.fillStyle = 'rgba(0,0,0,0.10)';
+  g.fillStyle = 'rgba(0,0,0,0.08)';
   for (let y = 0; y < c.height; y += 3) g.fillRect(0, y, c.width, 1);
   g.setTransform(s, 0, 0, s, 0, 0);
-  g.save(); g.translate(VW / 2, VH / 2); g.scale(1, VH / VW);
-  const vg = g.createRadialGradient(0, 0, VW * 0.3, 0, 0, VW * 0.75);
-  vg.addColorStop(0, 'rgba(4,0,12,0)'); vg.addColorStop(1, 'rgba(4,0,12,0.55)');
-  g.fillStyle = vg; g.fillRect(-VW, -VW, VW * 2, VW * 2); g.restore();
+  g.save();
+  g.translate(VW / 2, VH / 2);
+  g.scale(1, VH / VW);
+  const vg = g.createRadialGradient(0, 0, VW * 0.32, 0, 0, VW * 0.75);
+  vg.addColorStop(0, 'rgba(4,0,12,0)');
+  vg.addColorStop(1, 'rgba(4,0,12,0.52)');
+  g.fillStyle = vg;
+  g.fillRect(-VW, -VW, VW * 2, VW * 2);
+  g.restore();
   L.over = c;
 }
 
 function renderSprites() {
   const [c, g] = mk(64, 64);
   const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  r.addColorStop(0, 'rgba(255,255,255,1)'); r.addColorStop(0.15, 'rgba(255,240,250,0.85)');
-  r.addColorStop(0.4, 'rgba(255,120,200,0.25)'); r.addColorStop(1, 'rgba(255,46,151,0)');
-  g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+  r.addColorStop(0, 'rgba(255,255,255,1)');
+  r.addColorStop(0.15, 'rgba(255,240,250,0.88)');
+  r.addColorStop(0.42, 'rgba(255,110,200,0.28)');
+  r.addColorStop(1, 'rgba(255,46,151,0)');
+  g.fillStyle = r;
+  g.fillRect(0, 0, 64, 64);
   L.dot = c;
+
   const [c2, g2] = mk(64, 64);
   const r2 = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
-  r2.addColorStop(0, 'rgba(255,255,255,1)'); r2.addColorStop(0.15, 'rgba(220,255,255,0.85)');
-  r2.addColorStop(0.4, 'rgba(45,226,230,0.3)'); r2.addColorStop(1, 'rgba(45,226,230,0)');
-  g2.fillStyle = r2; g2.fillRect(0, 0, 64, 64);
+  r2.addColorStop(0, 'rgba(255,255,255,1)');
+  r2.addColorStop(0.15, 'rgba(220,255,255,0.88)');
+  r2.addColorStop(0.42, 'rgba(45,226,230,0.32)');
+  r2.addColorStop(1, 'rgba(45,226,230,0)');
+  g2.fillStyle = r2;
+  g2.fillRect(0, 0, 64, 64);
   L.dotC = c2;
 }
 
-function renderNoise() {   // once: VHS noise strip (seeded)
-  const c = document.createElement('canvas'); c.width = 512; c.height = 48;
-  const g = c.getContext('2d'); const im = g.createImageData(512, 48);
+function renderNoise() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 48;
+  const g = c.getContext('2d');
+  const im = g.createImageData(512, 48);
   for (let i = 0; i < im.data.length; i += 4) {
     const v = rand() < 0.5 ? 0 : 255 * rand();
-    im.data[i] = v; im.data[i + 1] = v * 0.85; im.data[i + 2] = v; im.data[i + 3] = rand() < 0.6 ? 0 : 255;
+    im.data[i] = v;
+    im.data[i + 1] = v * 0.85;
+    im.data[i + 2] = v;
+    im.data[i + 3] = rand() < 0.6 ? 0 : 255;
   }
   g.putImageData(im, 0, 0);
   L.noise = c;
 }
 
-// ---- events -------------------------------------------------------------------
-function spawnShootingStar() {
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+function spawnShootingStar(initialAge = 0) {
   const dir = rand() < 0.5 ? -1 : 1;
-  const ang = range(0.28, 0.6);
+  const ang = range(0.26, 0.55);
+  const life = range(0.65, 1.05);
   S.shoot.push({
-    x: range(380, VW - 380), y: range(70, 300), vx: Math.cos(ang) * dir, vy: Math.sin(ang),
-    sp: range(950, 1500), len: range(160, 280), age: 0, life: range(0.55, 1.0),
+    x: range(360, VW - 360),
+    y: range(65, 260),
+    vx: Math.cos(ang) * dir,
+    vy: Math.sin(ang),
+    sp: range(950, 1450),
+    len: range(180, 290),
+    age: initialAge * life,
+    life,
   });
 }
-function spawnCar() {
+
+function spawnCar(initialX = null) {
   const dir = rand() < 0.5 ? -1 : 1;
-  const warm = rand() < 0.5;
+  const warm = rand() < 0.55;
   S.cars.push({
-    x: dir > 0 ? -500 : VW + 500, dir, sp: range(700, 1100), len: range(320, 560),
-    rgb: warm ? '255,70,120' : '90,230,255', sprite: warm ? 'dot' : 'dotC', y: H0 + range(4, 9),
+    x: initialX !== null ? initialX : dir > 0 ? -450 : VW + 450,
+    dir,
+    sp: range(680, 1080),
+    len: range(320, 540),
+    rgb: warm ? '255,70,130' : '80,235,255',
+    sprite: warm ? 'dot' : 'dotC',
+    y: H0 + range(4, 9),
   });
 }
+
 function startFlicker() { S.flick = range(0.4, 1.1); }
 function startVHS() {
   const n = 1 + Math.floor(rand() * 3);
   S.vhs = { t: 0, dur: range(0.25, 0.55), bands: [] };
-  for (let i = 0; i < n; i++) S.vhs.bands.push({ y: range(80, VH - 120), h: range(10, 46), v: range(-160, 160), dx: 0 });
+  for (let i = 0; i < n; i++) {
+    S.vhs.bands.push({ y: range(80, VH - 120), h: range(10, 46), v: range(-160, 160), dx: 0 });
+  }
 }
 
-// ---- drawing helpers ----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Per-frame drawing
+// ---------------------------------------------------------------------------
 function drawStars(ctx, t) {
   const cols = ['#ffffff', '#9ff3ff', '#ffb3dd'];
   for (let c = 0; c < 3; c++) {
@@ -526,24 +855,24 @@ function drawStars(ctx, t) {
   }
   ctx.fillStyle = '#ffffff';
   for (const b of S.bright) {
-    const k = 0.6 + 0.4 * Math.sin(t * b.w + b.p);
-    ctx.globalAlpha = 0.5 * k;
-    ctx.fillRect(b.x - b.r * k, b.y - 0.5, b.r * 2 * k, 1);
-    ctx.fillRect(b.x - 0.5, b.y - b.r * k, 1, b.r * 2 * k);
-    ctx.globalAlpha = 0.9;
-    ctx.fillRect(b.x - 1, b.y - 1, 2, 2);
+    const k = 0.65 + 0.35 * Math.sin(t * b.w + b.p);
+    ctx.globalAlpha = 0.55 * k;
+    ctx.fillRect(b.x - b.r * k, b.y - 0.6, b.r * 2 * k, 1.2);
+    ctx.fillRect(b.x - 0.6, b.y - b.r * k, 1.2, b.r * 2 * k);
+    ctx.globalAlpha = 0.95;
+    ctx.fillRect(b.x - 1.2, b.y - 1.2, 2.4, 2.4);
   }
   ctx.globalAlpha = 1;
 }
 
 function drawSun(ctx, t) {
   const sy = S.sunY, D = SUN_R * 2, top = sy - SUN_R;
-  const breathe = 0.88 + 0.12 * Math.sin(t * 0.35);
+  const breathe = 0.90 + 0.10 * Math.sin(t * 0.38);
   ctx.globalAlpha = breathe;
   ctx.drawImage(L.sunGlow, SUN_X - L.sunGlowW / 2, sy - L.sunGlowH / 2, L.sunGlowW, L.sunGlowH);
   ctx.globalAlpha = 1;
-  // stripes: gaps appear at VSTART and widen as they scroll down
-  const VSTART = 0.42, PER = 0.075, phase = (t * 0.0055 / PER) % 1;
+
+  const VSTART = 0.40, PER = 0.072, phase = ((t * 0.006) / PER) % 1;
   const ch = L.sun.height, cw = L.sun.width;
   let cur = 0;
   const slice = (a, b) => {
@@ -554,37 +883,67 @@ function drawSun(ctx, t) {
     const v = VSTART + (k + phase) * PER;
     if (v >= 1) break;
     const u = (v - VSTART) / (1 - VSTART);
-    const th = PER * (0.04 + 0.62 * u);
-    slice(cur, v); cur = Math.min(1, v + th);
+    const th = PER * (0.05 + 0.62 * u);
+    slice(cur, v);
+    cur = Math.min(1, v + th);
   }
   slice(cur, 1);
 }
 
 function drawGrid(ctx, t) {
   const fv = S.flickVal;
-  const SP = 0.32, phase = (t * 0.55) % SP;
+  const SP = 0.32, phase = (t * 0.58) % SP;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  // vertical lines converge on the vanishing point
   ctx.globalAlpha = Math.min(1, fv);
   ctx.drawImage(L.vgrid, 0, H0, VW, GF);
   ctx.globalAlpha = 1;
-  // horizontal lines
+
   const far = new Path2D();
-  for (let z = 0.7 - phase; z < 26; z += SP) {
+  let segIdx = Math.floor((t * 0.58) / SP);
+  for (let z = 0.7 - phase; z < 26; z += SP, segIdx++) {
     if (z <= 0.05) continue;
     const y = H0 + GF / z;
     if (y > VH + 8) continue;
-    if (z > 6) { far.moveTo(0, y); far.lineTo(VW, y); continue; }
+    const roadHalf = ROAD_W * (1 / z);
+    const rx0 = SUN_X - roadHalf, rx1 = SUN_X + roadHalf;
+
+    if (z > 6) {
+      far.moveTo(0, y); far.lineTo(rx0, y);
+      far.moveTo(rx1, y); far.lineTo(VW, y);
+      continue;
+    }
     const k = Math.min(1, 2.4 / z);
-    ctx.fillStyle = `rgba(255,46,151,${0.17 * k * fv})`;
     const gw = 7 * Math.min(1, 1.6 / z) + 2;
-    ctx.fillRect(0, y - gw / 2, VW, gw);
-    ctx.fillStyle = `rgba(255,110,190,${(0.35 + 0.5 * k) * fv})`;
     const lw = Math.max(1, 2.6 / Math.sqrt(z));
-    ctx.fillRect(0, y - lw / 2, VW, lw);
+
+    // Left & right grid horizontals (outside the central highway)
+    ctx.fillStyle = `rgba(255,46,151,${0.18 * k * fv})`;
+    ctx.fillRect(0, y - gw / 2, rx0, gw);
+    ctx.fillRect(rx1, y - gw / 2, VW - rx1, gw);
+
+    ctx.fillStyle = `rgba(255,115,195,${(0.38 + 0.5 * k) * fv})`;
+    ctx.fillRect(0, y - lw / 2, rx0, lw);
+    ctx.fillRect(rx1, y - lw / 2, VW - rx1, lw);
+
+    // Scrolling dashed center-line on the Outrun highway
+    const zNext = z + SP * 0.55;
+    if (segIdx % 2 === 0 && z < 12) {
+      const yNext = H0 + GF / zNext;
+      const w0 = Math.max(1.2, 5.5 / z), w1 = Math.max(0.8, 5.5 / zNext);
+      ctx.fillStyle = `rgba(255,210,95,${0.75 * k * fv})`;
+      ctx.beginPath();
+      ctx.moveTo(SUN_X - w0, y);
+      ctx.lineTo(SUN_X + w0, y);
+      ctx.lineTo(SUN_X + w1, yNext);
+      ctx.lineTo(SUN_X - w1, yNext);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
-  ctx.strokeStyle = `rgba(255,70,170,${0.4 * fv})`; ctx.lineWidth = 1; ctx.stroke(far);
+  ctx.strokeStyle = `rgba(255,70,170,${0.42 * fv})`;
+  ctx.lineWidth = 1;
+  ctx.stroke(far);
   ctx.restore();
 }
 
@@ -592,11 +951,14 @@ function drawCars(ctx) {
   for (const c of S.cars) {
     const tail = c.x - c.dir * c.len;
     const gr = ctx.createLinearGradient(tail, 0, c.x, 0);
-    gr.addColorStop(0, `rgba(${c.rgb},0)`); gr.addColorStop(1, `rgba(${c.rgb},0.9)`);
+    gr.addColorStop(0, `rgba(${c.rgb},0)`);
+    gr.addColorStop(1, `rgba(${c.rgb},0.92)`);
     ctx.fillStyle = gr;
     const x0 = Math.min(tail, c.x), w = Math.abs(c.x - tail);
-    ctx.globalAlpha = 0.35; ctx.fillRect(x0, c.y - 3, w, 6);
-    ctx.globalAlpha = 1; ctx.fillRect(x0, c.y - 1, w, 2);
+    ctx.globalAlpha = 0.38;
+    ctx.fillRect(x0, c.y - 3, w, 6);
+    ctx.globalAlpha = 1;
+    ctx.fillRect(x0, c.y - 1.2, w, 2.4);
     ctx.drawImage(L[c.sprite], c.x - 22, c.y - 22, 44, 44);
   }
 }
@@ -609,17 +971,23 @@ function drawShooting(ctx) {
     const len = s.len * Math.min(1, s.age * 5);
     const tx = s.x - s.vx * len, ty = s.y - s.vy * len;
     const gr = ctx.createLinearGradient(tx, ty, s.x, s.y);
-    gr.addColorStop(0, 'rgba(255,120,200,0)'); gr.addColorStop(1, `rgba(255,240,250,${0.95 * fade})`);
-    ctx.strokeStyle = gr; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(s.x, s.y); ctx.stroke();
+    gr.addColorStop(0, 'rgba(255,120,200,0)');
+    gr.addColorStop(1, `rgba(255,245,252,${0.96 * fade})`);
+    ctx.strokeStyle = gr;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(s.x, s.y);
+    ctx.stroke();
     ctx.globalAlpha = fade;
-    ctx.drawImage(L.dot, s.x - 14, s.y - 14, 28, 28);
+    ctx.drawImage(L.dot, s.x - 15, s.y - 15, 30, 30);
     ctx.globalAlpha = 1;
   }
 }
 
 function drawVHS(ctx) {
-  const v = S.vhs; if (!v) return;
+  const v = S.vhs;
+  if (!v) return;
   const view = LW.view, cv = ctx.canvas;
   const env = Math.sin(Math.PI * Math.min(1, v.t / v.dur));
   ctx.save();
@@ -637,50 +1005,86 @@ function drawVHS(ctx) {
     ctx.globalAlpha = 0.22 * env;
     ctx.drawImage(L.noise, (b.y * 7) % 256, 0, 256, 48, 0, b.y, VW, b.h);
     ctx.globalAlpha = 0.35 * env;
-    ctx.fillStyle = '#2de2e6'; ctx.fillRect(0, b.y - 1, VW, 1);
-    ctx.fillStyle = '#ff2e97'; ctx.fillRect(0, b.y + b.h, VW, 1.5);
+    ctx.fillStyle = '#2de2e6';
+    ctx.fillRect(0, b.y - 1, VW, 1);
+    ctx.fillStyle = '#ff2e97';
+    ctx.fillRect(0, b.y + b.h, VW, 1.5);
   }
   ctx.restore();
 }
 
-// ---- scene ----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Scene lifecycle
+// ---------------------------------------------------------------------------
 LW.start({
   init() {
-    S.ridgeBack = makeRidge(d => ({ base: 50 + 215 * ss(0.06, 0.8, d), k: 0.25 + 0.75 * ss(0.05, 0.5, d) }), 70, 0.56);
-    S.ridgeFront = makeRidge(d => ({ base: 12 + 175 * ss(0.22, 1.0, d), k: 0.12 + 0.88 * ss(0.2, 0.7, d) }), 55, 0.6);
-    genStars(); genClouds(); renderNoise();
-    S.sunPhase = range(0, Math.PI * 2);
+    S.meshBack = makeFacetedRange(
+      46, 5,
+      (d) => ({ base: 6 + 245 * ss(0.15, 0.84, d), k: 0.08 + 0.92 * ss(0.14, 0.58, d) }),
+      98, 1001
+    );
+    S.meshFront = makeFacetedRange(
+      40, 4,
+      (d) => ({ base: 4 + 185 * ss(0.24, 0.98, d), k: 0.06 + 0.94 * ss(0.22, 0.72, d) }),
+      80, 2002
+    );
+    genCity();
+    genStars();
+    genClouds();
+    renderNoise();
+    S.sunPhase = range(0, TAU);
 
-    after(range(1.2, 3.5), spawnShootingStar);
-    every(5, 16, () => { spawnShootingStar(); if (rand() < 0.2) after(range(0.2, 0.7), spawnShootingStar); });
-    after(range(4, 9), spawnCar);
-    every(14, 40, () => { spawnCar(); if (rand() < 0.25) after(range(0.4, 1.2), spawnCar); });
+    // Schedule events so both live playback and stills look dynamic
+    after(7.62, () => spawnShootingStar(0));
+    after(6.9, () => spawnCar());
+    every(4.5, 13, () => {
+      spawnShootingStar(0);
+      if (rand() < 0.25) after(range(0.2, 0.6), () => spawnShootingStar(0));
+    });
+    after(range(2.5, 6), () => spawnCar());
+    every(10, 26, () => {
+      spawnCar();
+      if (rand() < 0.3) after(range(0.4, 1.1), () => spawnCar());
+    });
     every(18, 55, startFlicker);
     every(40, 110, startVHS);
   },
   resize(view) {
     PS = Math.min(2, Math.max(0.5, view.scale));
-    renderSky(); renderSun(); renderClouds(); renderMountains(); renderFloor();
-    renderPalms(); renderOverlay(); renderSprites();
+    renderSky();
+    renderSun();
+    renderClouds();
+    renderMountains();
+    renderFloor();
+    renderPalms();
+    renderOverlay();
+    renderSprites();
   },
   update(dt, t) {
-    S.sunY = SUN_Y0 + 26 * Math.sin(t * 2 * Math.PI / 420 + S.sunPhase);
+    S.sunY = SUN_Y0 + 24 * Math.sin((t * TAU) / 420 + S.sunPhase);
     for (const c of S.clouds) {
       c.x += c.v * dt;
       if (c.v > 0 && c.x > VW + 40) c.x = -c.w - 40;
       if (c.v < 0 && c.x < -c.w - 40) c.x = VW + 40;
     }
-    for (const s of S.shoot) { s.age += dt; s.x += s.vx * s.sp * dt; s.y += s.vy * s.sp * dt; }
-    S.shoot = S.shoot.filter(s => s.age < s.life);
+    for (const s of S.shoot) {
+      s.age += dt;
+      s.x += s.vx * s.sp * dt;
+      s.y += s.vy * s.sp * dt;
+    }
+    S.shoot = S.shoot.filter((s) => s.age < s.life);
     for (const c of S.cars) c.x += c.dir * c.sp * dt;
-    S.cars = S.cars.filter(c => c.dir > 0 ? c.x - c.len < VW + 60 : c.x + c.len > -60);
+    S.cars = S.cars.filter((c) => (c.dir > 0 ? c.x - c.len < VW + 60 : c.x + c.len > -60));
     if (S.flick > 0) {
       S.flick -= dt;
-      S.flickVal = S.flick <= 0 ? 1 : (rand() < 0.35 ? range(0.15, 0.45) : range(0.85, 1.25));
+      S.flickVal = S.flick <= 0 ? 1 : rand() < 0.35 ? range(0.2, 0.5) : range(0.85, 1.25);
     } else S.flickVal = 1;
     if (S.vhs) {
       S.vhs.t += dt;
-      for (const b of S.vhs.bands) { b.y += b.v * dt; b.dx = range(-28, 28); }
+      for (const b of S.vhs.bands) {
+        b.y += b.v * dt;
+        b.dx = range(-28, 28);
+      }
       if (S.vhs.t >= S.vhs.dur) S.vhs = null;
     }
   },
@@ -689,15 +1093,18 @@ LW.start({
     drawStars(ctx, t);
     drawShooting(ctx);
     drawSun(ctx, t);
-    S.clouds.forEach((cl, i) => { const r = L.clouds[i]; ctx.drawImage(r.c, cl.x, cl.y, r.w, r.h); });
+    S.clouds.forEach((cl, i) => {
+      const r = L.clouds[i];
+      ctx.drawImage(r.c, cl.x, cl.y, r.w, r.h);
+    });
     ctx.drawImage(L.mtn, 0, L.mtnTop, VW, L.mtnH);
     ctx.drawImage(L.floor, 0, H0, VW, GF);
     drawGrid(ctx, t);
     ctx.drawImage(L.haze, 0, H0, VW, L.hazeH);
-    ctx.globalAlpha = Math.min(1, 0.9 * S.flickVal);
+    ctx.globalAlpha = Math.min(1, 0.92 * S.flickVal);
     ctx.drawImage(L.band, 0, H0 - L.bandH / 2, VW, L.bandH);
     ctx.globalAlpha = 1;
-    ctx.fillStyle = `rgba(255,190,225,${Math.min(1, 0.85 * S.flickVal)})`;
+    ctx.fillStyle = `rgba(255,200,235,${Math.min(1, 0.88 * S.flickVal)})`;
     ctx.fillRect(0, H0 - 1, VW, 2);
     drawCars(ctx);
     const sway = 0.006 * Math.sin(t * 0.45);
