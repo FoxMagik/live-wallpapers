@@ -168,6 +168,7 @@ const NET_BINS = 28;
 
 const T = {
   live: false,
+  directPush: false,
   lastPushSimTime: -999,
   host: 'AEGIS-01',
   kernel: '7.2.15',
@@ -229,11 +230,12 @@ const T = {
   motes: [],
 };
 
-// Hook for livewall.py desktop host to push real `/proc` & `/sys` usage
+// Hook for livewall.py desktop host (or localhost HTTP poller) to push real usage
 if (window.livewall) {
-  window.livewall.pushStats = (data) => {
+  window.livewall.pushStats = (data, fromHttp = false) => {
     if (!data) return;
     T.live = true;
+    if (!fromHttp) T.directPush = true;
     T.lastPushSimTime = LW.time;
     if (data.host) T.host = String(data.host).toUpperCase();
     if (data.kernel) T.kernel = String(data.kernel);
@@ -711,6 +713,37 @@ LW.start({
 
     every(4.5, 9.0, () => { T.pulseRing = 0.001; });
     after(7.2, () => { T.pulseRing = 0.001; });
+
+    // In browser / OBS mode (not ?still=1), poll localhost telemetry agent if available
+    const urlParams = new URLSearchParams(location.search);
+    if (!urlParams.has('still') && urlParams.get('telemetry') !== '0') {
+      const endpoint = urlParams.get('telemetry') || 'http://127.0.0.1:19845/stats';
+      let backoff = 0;
+      const pollLocalAgent = async () => {
+        if (T.directPush || (window.livewall && window.livewall.paused)) return;
+        if (backoff > 0) { backoff--; return; }
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 650);
+        try {
+          const res = await fetch(endpoint, { signal: ctrl.signal, cache: 'no-store' });
+          clearTimeout(tid);
+          if (res.ok) {
+            const data = await res.json();
+            if (window.livewall && window.livewall.pushStats) {
+              window.livewall.pushStats(data, true);
+            }
+            backoff = 0;
+          } else {
+            backoff = 8;
+          }
+        } catch (_e) {
+          clearTimeout(tid);
+          backoff = 8; // agent not running on this machine; retry quietly in ~8s
+        }
+      };
+      setTimeout(pollLocalAgent, 150);
+      setInterval(pollLocalAgent, 1000);
+    }
   },
   resize() { prerender(); },
   update(dt, t) {

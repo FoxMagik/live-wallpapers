@@ -14,6 +14,7 @@ while unpaused to scenes that implement `window.livewall.pushStats(data)` or
 usage: livewall.py <scene.html | URL> [--fps 30]
 """
 import argparse
+import http.server
 import json
 import os
 import pathlib
@@ -280,6 +281,7 @@ class Host:
         self.views = {}  # (x, y) -> [window, webview, paused-state]
         self.pending = False
         self.telemetry = TelemetryCollector()
+        self._start_http_telemetry()
         display = Gdk.Display.get_default()
         for i in range(display.get_n_monitors()):
             self.add_monitor(display.get_monitor(i))
@@ -315,6 +317,50 @@ class Host:
         win.show_all()
         win.input_shape_combine_region(cairo.Region())  # click-through
         self.views[(geo.x, geo.y)] = [win, view, None]
+
+    def _start_http_telemetry(self):
+        collector = self.telemetry
+        port = int(os.environ.get("LIVEWALL_STATS_PORT", "19845"))
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def _cors(self):
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "*")
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+
+            def do_OPTIONS(self):
+                self.send_response(204)
+                self._cors()
+                self.end_headers()
+
+            def do_GET(self):
+                if self.path.startswith("/stats") or self.path == "/":
+                    body = json.dumps(collector.sample(), separators=(",", ":")).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(404)
+                    self._cors()
+                    self.end_headers()
+
+            def log_message(self, fmt, *args):
+                pass
+
+        class Server(http.server.ThreadingHTTPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+        try:
+            srv = Server(("127.0.0.1", port), Handler)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+        except OSError:
+            pass
 
     def push_telemetry(self):
         active_views = [entry[1] for entry in self.views.values() if not entry[2]]

@@ -40,6 +40,15 @@ Add a **Browser Source** with the scene URL (GitHub Pages or a local file) at 19
 | `fps=60` | Frame cap (the default is 60 in a browser) |
 | `seed=42` | Same random sequence every time |
 | `still=1&t=8` | Simulate 8 seconds, draw one frame and stop |
+| `telemetry=http://127.0.0.1:19845/stats` | Custom telemetry endpoint for `aegis` (polls `127.0.0.1:19845/stats` by default; `telemetry=0` forces simulation) |
+
+### Live PC telemetry in a browser / OBS (`aegis`)
+
+On an Omarchy desktop, `livewall` automatically pushes live `/proc` and `/sys` hardware metrics into `aegis` AND serves them on `http://127.0.0.1:19845/stats`. On any other machine (or when running without the `livewall` desktop host), start the standalone agent so OBS Browser Sources or the GitHub Pages URL display real hardware stats:
+
+```bash
+python3 tools/telemetry-agent.py
+```
 
 ## Making a scene
 
