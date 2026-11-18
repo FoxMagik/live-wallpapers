@@ -120,7 +120,10 @@ const LW = (() => {
 })();
 // ============================== end runtime =================================
 
-// ---- scene: Helldivers — Super Destroyer squadron over an embattled world ---
+// ---- scene: Helldivers — Orbital Super Destroyer Squadron ------------------
+// Scaled for vast orbital depth (elements 30-45% smaller), richly textured
+// multi-bevel hull plating with Aztek greebles, and dynamic Super Destroyers +
+// Eagle/Pelican dropships warping and flying in and out of the combat zone.
 const { VW, VH, rand, range, pick, after, every } = LW;
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -150,48 +153,51 @@ function poly(g, pts) {
   g.closePath();
 }
 
-// Craggy volcanic/rocky planetary ridgelines with sharp peaks & mesas
+// Fine-scale craggy planetary ridgelines (lower profile for deeper orbital scale)
 const jagged = (x, s) =>
-  Math.sin(x * 0.012 + s) * 0.55 +
-  Math.sin(x * 0.029 + s * 2.1) * 0.28 +
-  Math.abs(Math.cos(x * 0.047 + s * 3.7)) * 0.22 +
-  Math.sin(x * 0.095 + s * 1.3) * 0.08;
+  Math.sin(x * 0.015 + s) * 0.52 +
+  Math.sin(x * 0.036 + s * 2.1) * 0.28 +
+  Math.abs(Math.cos(x * 0.062 + s * 3.7)) * 0.20 +
+  Math.sin(x * 0.12 + s * 1.3) * 0.08;
 
 const distMesa = (x) =>
-  754 - 44 * Math.exp(-(((x - 280) / 210) ** 2))
-      - 58 * Math.exp(-(((x - 1560) / 260) ** 2))
-      - 28 * Math.exp(-(((x - 840) / 170) ** 2))
-      + 24 * jagged(x, 0.8);
+  818 - 26 * Math.exp(-(((x - 310) / 180) ** 2))
+      - 34 * Math.exp(-(((x - 1540) / 220) ** 2))
+      - 18 * Math.exp(-(((x - 890) / 150) ** 2))
+      + 15 * jagged(x, 0.8);
 
 const farRidge = (x) =>
-  806 - 48 * Math.exp(-(((x - 630) / 180) ** 2))
-      - 38 * Math.exp(-(((x - 1340) / 150) ** 2))
-      + 26 * jagged(x, 2.4);
+  856 - 28 * Math.exp(-(((x - 640) / 160) ** 2))
+      - 24 * Math.exp(-(((x - 1340) / 140) ** 2))
+      + 16 * jagged(x, 2.4);
 
 const midRidge = (x) =>
-  862 - 36 * Math.exp(-(((x - 220) / 160) ** 2))
-      - 42 * Math.exp(-(((x - 1710) / 190) ** 2))
-      + 22 * jagged(x, 4.1);
+  898 - 22 * Math.exp(-(((x - 230) / 150) ** 2))
+      - 26 * Math.exp(-(((x - 1690) / 170) ** 2))
+      + 14 * jagged(x, 4.1);
 
 const nearRidge = (x) =>
-  922 - 54 * Math.exp(-(((x - 95) / 145) ** 2))
-      - 62 * Math.exp(-(((x - 1835) / 155) ** 2))
-      + 18 * jagged(x, 5.7);
+  946 - 32 * Math.exp(-(((x - 95) / 135) ** 2))
+      - 38 * Math.exp(-(((x - 1835) / 145) ** 2))
+      + 11 * jagged(x, 5.7);
 
-// Main Super Destroyer placement (reference space 1400x360)
-const SHIP = { x: 675, y: 84, k: 0.88, ox: 50, oy: 70 };
-const shipPt = (px, py, bob = 0) => [
-  SHIP.x + (px - SHIP.ox) * SHIP.k,
-  SHIP.y + (py - SHIP.oy) * SHIP.k + bob,
+//Ringed planet in upper-left sky (reduced ~38% for vast orbital scale)
+const PLANET = { x: 300, y: 235, r: 92, tilt: -0.24 };
+
+// Flagship Super Destroyer (reduced ~42% from k=0.88 to k=0.52)
+const SHIP = { x: 810, y: 128, k: 0.52, ox: 50, oy: 70 };
+const shipPt = (px, py, bob = 0, sObj = SHIP) => [
+  sObj.x + (px - SHIP.ox) * sObj.k,
+  sObj.y + (py - SHIP.oy) * sObj.k + bob,
 ];
-const EMIT = [468, 286];               // ventral orbital strike emitter
+const EMIT = [468, 286];
 const POD_BAYS = [[360, 238], [414, 240], [468, 242]];
 const ENGINES = [
-  [1274, 198, 1.2],
-  [1274, 214, 1.05],
-  [1274, 232, 0.9],
-  [1252, 206, 0.72],
-  [1252, 224, 0.72],
+  [1274, 198, 1.15],
+  [1274, 214, 1.0],
+  [1274, 232, 0.85],
+  [1252, 206, 0.68],
+  [1252, 224, 0.68],
 ];
 const LIGHTS = [
   { p: [188, 76], c: '130,205,255', rate: 0.55, ph: 0.0 },
@@ -202,21 +208,16 @@ const LIGHTS = [
   { p: [1238, 86], c: '255,75,60', rate: 0.68, ph: 1.4 },
 ];
 const PORTS = [
-  [218, 174], [220, 238], // twin bow shield thrusters
-  [526, 194], [526, 254], // mid-hull maneuvering ports
-];
-
-// Secondary fleet ships in orbit (positioned cleanly away from the planet disc)
-const FLEET = [
-  { x: 1410, y: 315, k: 0.25, phase: 1.2, emit: [468, 286], canFire: true },
-  { x: 540, y: 365, k: 0.17, phase: 3.7, emit: [468, 286], canFire: true },
-  { x: 1180, y: 415, k: 0.12, phase: 5.1, emit: [468, 286], canFire: false },
+  [218, 174], [220, 238],
+  [526, 194], [526, 254],
 ];
 
 const layers = {};
 
 // ---------------------------------------------------------------------------
-// Detailed Super Destroyer renderer
+// High-Detail Textured Super Destroyer Renderer
+// Multi-faceted 3/4 perspective armor plates, Aztek hull paneling, embossed
+// rivet/seam lines, recessed trenches, glowing deck ports, and weathering.
 // ---------------------------------------------------------------------------
 const HULL_SIL = {
   neck: [195, 112, 315, 108, 315, 258, 205, 250],
@@ -225,7 +226,7 @@ const HULL_SIL = {
   rearUpper: [548, 114, 1246, 152, 1258, 166, 1256, 210, 548, 182],
   rearLower: [548, 178, 1272, 204, 1270, 240, 1185, 244, 690, 216, 548, 208],
   prowTop: [96, 94, 242, 98, 198, 184, 52, 178],
-  prowNose: [50, 178, 224, 184, 224, 228, 50, 218],
+  prowNose: [46, 177, 224, 184, 224, 228, 46, 219],
   prowBot: [56, 218, 200, 226, 262, 306, 132, 294],
 };
 
@@ -233,256 +234,388 @@ function drawShipSilhouette(g, fn) {
   for (const [k, pts] of Object.entries(HULL_SIL)) fn(k, pts);
 }
 
+// Procedural Aztek armor plating & embossed seam generator inside a clipped hull section
+function paintArmorTexture(g, x0, y0, w, h, seed, tilt = 0.04) {
+  const R = mkRng(seed);
+  g.save();
+  // 1. Subtle multi-tone Aztek gunmetal armor patches
+  const nPatches = Math.floor((w * h) / 750);
+  for (let i = 0; i < nPatches; i++) {
+    const px = x0 + R() * w;
+    const py = y0 + R() * h;
+    const pw = 14 + R() * 48;
+    const ph = 6 + R() * 18;
+    const dy = pw * tilt;
+    const light = R() < 0.45;
+    g.fillStyle = light
+      ? `rgba(215, 225, 235, ${0.025 + R() * 0.045})`
+      : `rgba(8, 10, 13, ${0.08 + R() * 0.14})`;
+    poly(g, [px, py, px + pw, py + dy, px + pw - 2, py + ph + dy, px - 2, py + ph]);
+    g.fill();
+  }
+
+  // 2. Embossed transverse hull ribs (1px dark groove + 1px light bevel)
+  const stepX = 28 + Math.floor(R() * 12);
+  for (let x = x0 + 16; x < x0 + w - 12; x += stepX) {
+    const sl = (R() - 0.5) * 8;
+    g.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    g.lineWidth = 1.2;
+    g.beginPath(); g.moveTo(x, y0); g.lineTo(x + sl, y0 + h); g.stroke();
+    g.strokeStyle = 'rgba(200, 210, 220, 0.11)';
+    g.lineWidth = 0.9;
+    g.beginPath(); g.moveTo(x + 1.3, y0); g.lineTo(x + sl + 1.3, y0 + h); g.stroke();
+  }
+
+  // 3. Longitudinal armor seam lines
+  const rows = Math.max(2, Math.floor(h / 18));
+  for (let r = 1; r < rows; r++) {
+    const ry = y0 + (h * r) / rows;
+    g.strokeStyle = 'rgba(0, 0, 0, 0.38)';
+    g.lineWidth = 1.1;
+    g.beginPath(); g.moveTo(x0, ry); g.lineTo(x0 + w, ry + w * tilt); g.stroke();
+    g.strokeStyle = 'rgba(210, 220, 230, 0.10)';
+    g.lineWidth = 0.8;
+    g.beginPath(); g.moveTo(x0, ry + 1.2); g.lineTo(x0 + w, ry + w * tilt + 1.2); g.stroke();
+  }
+  g.restore();
+}
+
 function renderShip(scale) {
-  const S = SHIP.k * scale, X0 = 30, Y0 = 55, W = 1310, H = 295;
+  // Render at high internal resolution so scaled-down ships stay razor-sharp
+  const S = Math.max(0.85, SHIP.k * scale * 1.35);
+  const X0 = 30, Y0 = 55, W = 1310, H = 295;
   const c = mk(W * S, H * S), g = c.getContext('2d');
   g.setTransform(S, 0, 0, S, -X0 * S, -Y0 * S);
   g.lineJoin = 'round';
   g.lineCap = 'round';
 
-  const vGrad = (y0, y1, c0, c1, c2) => {
+  const vGrad = (y0, y1, stops) => {
     const gr = g.createLinearGradient(0, y0, 0, y1);
-    gr.addColorStop(0, c0);
-    if (c2) { gr.addColorStop(0.55, c1); gr.addColorStop(1, c2); }
-    else gr.addColorStop(1, c1);
+    for (const [p, col] of stops) gr.addColorStop(p, col);
     return gr;
   };
 
-  // --- 1. Dorsal bridge wing & communication masts (behind hull) ---
-  poly(g, [328, 72, 476, 76, 488, 98, 322, 96]);
-  g.fillStyle = vGrad(72, 98, '#3d4247', '#202327');
+  // --- 1. Dorsal bridge wing, sensor masts & open truss gantry ---
+  poly(g, [326, 70, 478, 75, 492, 98, 318, 96]);
+  g.fillStyle = vGrad(70, 98, [[0, '#4a5058'], [0.4, '#32373d'], [1, '#1a1d21']]);
   g.fill();
-  g.strokeStyle = 'rgba(180,185,190,0.28)'; g.lineWidth = 1; g.stroke();
+  g.strokeStyle = 'rgba(200,210,220,0.32)'; g.lineWidth = 1; g.stroke();
 
-  // Antenna array
-  g.strokeStyle = '#484d52'; g.lineWidth = 1.4;
-  for (const [x, y0, y1] of [[188, 96, 76], [248, 102, 80], [272, 102, 84], [338, 92, 70], [565, 114, 86], [1206, 148, 94], [1238, 150, 86]]) {
+  // Masts & whips
+  g.strokeStyle = '#525860'; g.lineWidth = 1.3;
+  for (const [x, y0, y1] of [
+    [188, 96, 72], [202, 96, 80], [248, 102, 78], [272, 102, 82],
+    [338, 92, 66], [352, 92, 74], [565, 114, 84], [1206, 148, 92], [1238, 150, 84],
+  ]) {
     g.beginPath(); g.moveTo(x, y0); g.lineTo(x, y1); g.stroke();
   }
 
-  // Long dorsal gantry lattice along the spine
+  // Detailed 3D dorsal lattice gantry along the main boom
   const spineTop = (x) => 114 + (x - 560) * (36 / 680);
-  g.strokeStyle = '#25282c'; g.lineWidth = 2.6;
+  g.strokeStyle = '#1e2125'; g.lineWidth = 3.0;
   g.beginPath();
-  g.moveTo(600, spineTop(600) - 15);
-  g.lineTo(1235, spineTop(1235) - 14);
+  g.moveTo(596, spineTop(596) - 16);
+  g.lineTo(1238, spineTop(1238) - 15);
   g.stroke();
-  g.strokeStyle = '#383c42'; g.lineWidth = 1.3;
+  g.strokeStyle = '#484e56'; g.lineWidth = 1.3;
   g.beginPath();
-  g.moveTo(600, spineTop(600) - 9);
-  g.lineTo(1235, spineTop(1235) - 8);
+  g.moveTo(596, spineTop(596) - 16.5);
+  g.lineTo(1238, spineTop(1238) - 15.5);
+  g.moveTo(596, spineTop(596) - 9.5);
+  g.lineTo(1238, spineTop(1238) - 8.5);
   g.stroke();
-  for (let x = 608; x <= 1228; x += 34) {
+  for (let x = 602; x <= 1230; x += 26) {
     const y = spineTop(x);
+    g.strokeStyle = '#33383e'; g.lineWidth = 1.4;
     g.beginPath();
-    g.moveTo(x, y - 15); g.lineTo(x, y + 1);
-    g.moveTo(x, y - 14); g.lineTo(x + 34, y - 6);
+    g.moveTo(x, y - 16); g.lineTo(x, y + 1);
+    g.moveTo(x, y - 15); g.lineTo(x + 26, y - 5);
+    g.moveTo(x + 13, y - 15.5); g.lineTo(x, y - 4);
     g.stroke();
   }
-  // Twin stern vertical stabilizers / gantry towers
-  g.fillStyle = '#262a2e';
-  g.fillRect(1200, 96, 10, 62);
-  g.fillRect(1232, 88, 12, 74);
-  g.fillStyle = '#3d4248';
-  g.fillRect(1200, 96, 3, 62);
-  g.fillRect(1232, 88, 3, 74);
 
-  // --- 2. Recessed neck & mechanical structure between bow shields and mid-hull ---
+  // Twin stern vertical stabilizer fins with bevelled leading edges
+  for (const [fx, fy, fw, fh] of [[1198, 94, 11, 64], [1232, 86, 13, 76]]) {
+    g.fillStyle = '#202428'; g.fillRect(fx, fy, fw, fh);
+    g.fillStyle = '#4a5058'; g.fillRect(fx, fy, 3, fh);
+    g.fillStyle = '#141619'; g.fillRect(fx + fw - 2.5, fy, 2.5, fh);
+  }
+
+  // --- 2. Recessed armored neck & mechanical conduits ---
   poly(g, HULL_SIL.neck);
-  g.fillStyle = vGrad(108, 258, '#23272c', '#121417');
+  g.fillStyle = vGrad(108, 258, [[0, '#252a30'], [0.5, '#171a1e'], [1, '#0e1013']]);
   g.fill();
-  // Neck structural ribs & airlock bay
-  g.fillStyle = '#1b1f23';
-  g.fillRect(212, 134, 62, 34);
-  g.fillRect(216, 198, 56, 38);
-  g.strokeStyle = '#343940'; g.lineWidth = 2;
-  for (const y of [124, 152, 180, 212, 236]) {
-    g.beginPath(); g.moveTo(205, y); g.lineTo(278, y + 2); g.stroke();
+  g.save(); g.clip();
+  paintArmorTexture(g, 195, 108, 120, 150, 1101, 0.02);
+  // Hydraulic pistons & ribbed docking conduits in neck
+  for (const y of [122, 144, 166, 206, 226, 242]) {
+    g.fillStyle = '#0b0d0f'; g.fillRect(202, y, 82, 5);
+    g.fillStyle = '#383e46'; g.fillRect(202, y, 82, 1.6);
   }
+  g.restore();
 
-  // Ventral dark observation bay / bridge under-hang (tinted armored glass)
-  poly(g, [550, 200, 725, 212, 715, 248, 595, 244, 550, 224]);
-  g.fillStyle = vGrad(200, 248, '#0b1c24', '#16313f', '#091318');
+  // Ventral observation bay (armored blue-tinted glass canopy & steel ribs)
+  poly(g, [550, 200, 728, 212, 716, 248, 594, 244, 550, 224]);
+  g.fillStyle = vGrad(200, 248, [[0, '#091820'], [0.45, '#193b4d'], [0.75, '#102632'], [1, '#071015']]);
   g.fill();
-  g.strokeStyle = 'rgba(90,150,180,0.28)'; g.lineWidth = 1; g.stroke();
-  g.strokeStyle = '#111619'; g.lineWidth = 2;
-  for (const x of [595, 638, 680]) {
-    g.beginPath(); g.moveTo(x, 204); g.lineTo(x - 6, 245); g.stroke();
+  g.strokeStyle = 'rgba(110,185,220,0.35)'; g.lineWidth = 1.1; g.stroke();
+  g.strokeStyle = '#101519'; g.lineWidth = 2.4;
+  for (const x of [582, 612, 642, 672, 702]) {
+    g.beginPath(); g.moveTo(x, 203); g.lineTo(x - 6, 246); g.stroke();
   }
-  // Ventral sensor dome & chin turret under mid-hull
-  poly(g, [535, 244, 650, 252, 636, 268, 548, 264]);
-  g.fillStyle = '#23272b'; g.fill();
-  poly(g, [440, 272, 515, 274, 505, 294, 452, 292]);
-  g.fillStyle = '#1b1e22'; g.fill();
-  g.strokeStyle = '#383d42'; g.lineWidth = 2.6;
+  // Ventral chin sensor pod & twin orbital cannon battery
+  poly(g, [532, 242, 654, 251, 638, 268, 546, 264]);
+  g.fillStyle = vGrad(242, 268, [[0, '#2c3137'], [1, '#14171a']]); g.fill();
+  poly(g, [438, 270, 518, 273, 506, 294, 450, 292]);
+  g.fillStyle = vGrad(270, 294, [[0, '#262a2f'], [1, '#121417']]); g.fill();
+  g.strokeStyle = '#454b52'; g.lineWidth = 2.8;
   g.beginPath();
-  g.moveTo(492, 288); g.lineTo(524, 312);
-  g.moveTo(478, 290); g.lineTo(510, 314);
+  g.moveTo(492, 288); g.lineTo(526, 313);
+  g.moveTo(478, 290); g.lineTo(512, 315);
   g.stroke();
 
-  // Hanging ordnance / turret batteries under the rear spine
-  for (const [x, y, s] of [[760, 218, 1], [855, 224, 0.95], [935, 228, 0.85]]) {
+  // Ventral heavy gun / missile pods under the rear boom
+  for (const [x, y, s] of [[758, 217, 1], [848, 223, 0.94], [932, 227, 0.86], [1012, 231, 0.78]]) {
     g.save(); g.translate(x, y); g.scale(s, s);
-    poly(g, [-22, -2, 22, 0, 16, 20, -16, 18]);
-    g.fillStyle = '#1e2125'; g.fill();
-    g.strokeStyle = '#34393f'; g.lineWidth = 3.2;
+    poly(g, [-24, -2, 24, 0, 18, 21, -17, 19]);
+    g.fillStyle = vGrad(-2, 21, [[0, '#2a2f35'], [1, '#121417']]); g.fill();
+    g.strokeStyle = 'rgba(180,190,200,0.22)'; g.lineWidth = 1; g.stroke();
+    g.strokeStyle = '#3d434b'; g.lineWidth = 3.0;
     g.beginPath();
-    g.moveTo(-8, 14); g.lineTo(-22, 32);
+    g.moveTo(-9, 14); g.lineTo(-23, 32);
     g.moveTo(4, 15); g.lineTo(-10, 34);
     g.stroke();
     g.restore();
   }
 
-  // --- 3. Rear Spine / Main Boom (SES Super Earth Ship) ---
+  // --- 3. Rear Spine / Main Boom (3D multi-plane shading + Aztek armor plates) ---
+  // Lower bevelled chine of boom
   poly(g, HULL_SIL.rearLower);
-  g.fillStyle = vGrad(178, 244, '#2b2f34', '#181a1d');
+  g.fillStyle = vGrad(178, 244, [[0, '#32373e'], [0.4, '#22262b'], [1, '#111316']]);
   g.fill();
+  g.save(); g.clip();
+  paintArmorTexture(g, 548, 178, 725, 68, 2202, 0.048);
+  g.restore();
 
+  // Main upper side hull of boom
   poly(g, HULL_SIL.rearUpper);
-  g.fillStyle = vGrad(114, 210, '#4a4f55', '#34383d', '#24272b');
+  g.fillStyle = vGrad(114, 210, [[0, '#5a6068'], [0.22, '#474c53'], [0.7, '#32363c'], [1, '#22252a']]);
   g.fill();
-  g.strokeStyle = 'rgba(185,190,195,0.28)'; g.lineWidth = 1; g.stroke();
+  g.save(); g.clip();
+  paintArmorTexture(g, 548, 114, 710, 96, 3303, 0.052);
+  // Recessed dark longitudinal equipment trench along the boom chine
+  poly(g, [552, 166, 1255, 200, 1255, 210, 552, 178]);
+  g.fillStyle = '#181b1f'; g.fill();
+  g.strokeStyle = 'rgba(210,220,230,0.25)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(552, 166); g.lineTo(1255, 200); g.stroke();
+  g.restore();
+  g.strokeStyle = 'rgba(200,208,216,0.32)'; g.lineWidth = 1.1; g.stroke();
 
-  poly(g, [548, 114, 1246, 152, 1236, 164, 548, 128]);
-  g.fillStyle = '#575c63'; g.fill();
+  // Sloped top dorsal armor deck plate of rear boom
+  poly(g, [548, 114, 1246, 152, 1236, 165, 548, 129]);
+  g.fillStyle = vGrad(114, 165, [[0, '#6a7078'], [1, '#494e55']]);
+  g.fill();
+  g.save(); g.clip();
+  paintArmorTexture(g, 548, 114, 700, 52, 4404, 0.054);
+  g.restore();
 
-  // Panel seams along rear spine
-  g.strokeStyle = 'rgba(0,0,0,0.48)'; g.lineWidth = 1.1;
-  for (let x = 610; x < 1230; x += 62) {
-    const yt = spineTop(x);
-    g.beginPath(); g.moveTo(x, yt + 12); g.lineTo(x - 4, yt + 84); g.stroke();
+  // Stern engine cowling & armored thruster nozzles
+  poly(g, [1238, 152, 1266, 158, 1276, 192, 1274, 240, 1236, 242]);
+  g.fillStyle = vGrad(152, 242, [[0, '#383d44'], [0.5, '#22262b'], [1, '#121417']]);
+  g.fill();
+  for (const ny of [194, 210, 228]) {
+    poly(g, [1264, ny - 5, 1278, ny - 4, 1278, ny + 4, 1264, ny + 5]);
+    g.fillStyle = '#15181c'; g.fill();
+    g.strokeStyle = '#525862'; g.lineWidth = 1; g.stroke();
   }
-  g.beginPath();
-  g.moveTo(555, 168); g.lineTo(1254, 202);
-  g.moveTo(555, 184); g.lineTo(1268, 216);
-  g.stroke();
 
-  // Yellow "SES" hull livery & 3-stripe Helldivers insignia
+  // Yellow "SES SUPER EARTH" hull livery & 3-bar insignia
   g.save();
-  g.translate(680, 146);
+  g.translate(675, 147);
   g.rotate(0.052);
-  g.fillStyle = '#c8b456';
-  g.font = 'italic 800 15px system-ui, sans-serif';
+  g.fillStyle = '#d4be58';
+  g.font = 'italic 800 14.5px system-ui, sans-serif';
   g.fillText('SES SUPER EARTH', 0, 0);
   for (let i = 0; i < 3; i++) {
-    const y = -11 + i * 4.5;
-    poly(g, [152 + i * 6, y, 290 - i * 8, y, 286 - i * 8, y + 2.6, 150 + i * 6, y + 2.6]);
+    const y = -10.5 + i * 4.4;
+    poly(g, [148 + i * 6, y, 286 - i * 8, y, 282 - i * 8, y + 2.5, 146 + i * 6, y + 2.5]);
     g.fill();
   }
   g.restore();
 
-  // Small white hull LED strip dots along spine
-  g.fillStyle = 'rgba(215,235,255,0.75)';
-  for (const x of [618, 690, 704, 835, 960, 1085, 1190]) {
-    const y = 171 + (x - 560) * 0.048;
-    g.fillRect(x, y, 6, 1.8);
+  // Clusters of glowing white/cyan micro-viewports along the boom trench
+  g.fillStyle = 'rgba(220, 240, 255, 0.88)';
+  for (const [x, cnt] of [[575, 3], [625, 4], [690, 5], [775, 3], [845, 4], [925, 3], [1010, 4], [1095, 3], [1175, 4]]) {
+    for (let k = 0; k < cnt; k++) {
+      const px = x + k * 7;
+      const py = 171 + (px - 560) * 0.048;
+      g.fillRect(px, py, 4.2, 1.7);
+    }
   }
 
-  // --- 4. Mid-Hull Block (Bridge + 3 Broadside Drop Bays + Louvered Thruster Pod) ---
+  // --- 4. Mid-Hull Command & Hangar Section ---
   poly(g, HULL_SIL.midTop);
-  g.fillStyle = vGrad(92, 175, '#50555b', '#33373c');
+  g.fillStyle = vGrad(92, 175, [[0, '#5e646c'], [0.35, '#464b52'], [1, '#2b2f35']]);
   g.fill();
-  poly(g, [275, 108, 345, 92, 540, 104, 540, 116, 275, 118]);
-  g.fillStyle = '#5c6168'; g.fill();
-  g.strokeStyle = '#c5b152'; g.lineWidth = 2.2;
-  g.beginPath(); g.moveTo(310, 124); g.lineTo(542, 134); g.stroke();
+  g.save(); g.clip();
+  paintArmorTexture(g, 270, 92, 305, 84, 5505, 0.03);
+  g.restore();
 
-  // Bridge superstructure + glowing red bridge windows
-  poly(g, [292, 92, 460, 88, 468, 106, 284, 108]);
-  g.fillStyle = '#2d3136'; g.fill();
-  g.fillStyle = 'rgba(255,85,65,0.92)';
-  for (const x of [302, 314, 326, 368, 382, 418]) g.fillRect(x, 97, 7, 2.8);
+  // Upper mid-hull bevelled deck highlight & yellow trim stripe
+  poly(g, [275, 108, 345, 92, 540, 104, 540, 117, 275, 118]);
+  g.fillStyle = '#686e76'; g.fill();
+  g.strokeStyle = '#d4be58'; g.lineWidth = 2.2;
+  g.beginPath(); g.moveTo(306, 124); g.lineTo(544, 134); g.stroke();
+
+  // Armored command bridge + glowing red tactical viewport slits
+  poly(g, [290, 92, 462, 87, 470, 106, 282, 108]);
+  g.fillStyle = vGrad(87, 108, [[0, '#3c4148'], [1, '#202327']]); g.fill();
+  g.strokeStyle = 'rgba(200,210,220,0.28)'; g.lineWidth = 1; g.stroke();
+  g.fillStyle = 'rgba(255, 85, 65, 0.95)';
+  for (const x of [298, 310, 322, 362, 376, 390, 418, 430]) g.fillRect(x, 96.5, 7.5, 2.8);
 
   // Broadside lower hull
   poly(g, HULL_SIL.midBay);
-  g.fillStyle = vGrad(160, 282, '#3a3e44', '#222529', '#141619');
+  g.fillStyle = vGrad(160, 282, [[0, '#444950'], [0.45, '#2b2f35'], [0.8, '#1a1d21'], [1, '#101215']]);
   g.fill();
-  g.strokeStyle = 'rgba(170,175,180,0.22)'; g.lineWidth = 1; g.stroke();
+  g.save(); g.clip();
+  paintArmorTexture(g, 252, 160, 310, 122, 6606, 0.03);
+  // Lower chine shadow bevel on mid-hull
+  poly(g, [252, 236, 552, 248, 552, 266, 480, 282, 320, 272]);
+  g.fillStyle = 'rgba(8, 10, 12, 0.55)'; g.fill();
+  g.restore();
+  g.strokeStyle = 'rgba(185,192,200,0.26)'; g.lineWidth = 1.1; g.stroke();
 
-  // Three prominent broadside drop-bay pods
+  // Row of white service lights above the 3 broadside bays + red warning lights on left
+  g.fillStyle = 'rgba(220,240,255,0.88)';
+  for (let x = 336; x <= 482; x += 11) g.fillRect(x, 165 + (x - 336) * 0.03, 5, 1.6);
+  g.fillStyle = 'rgba(255,80,60,0.9)';
+  for (const x of [274, 286, 304, 316]) g.fillRect(x, 224 + (x - 274) * 0.05, 6, 2);
+
+  // Three 3D broadside drop-bay pods with hydraulic hinges & yellow hazard frames
   for (let i = 0; i < 3; i++) {
     const bx = 334 + i * 54, by = 188 + i * 2;
-    poly(g, [bx + 4, by - 22, bx + 48, by - 20, bx + 44, by, bx, by - 2]);
-    g.fillStyle = '#43484e'; g.fill();
-    g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.stroke();
-    g.fillStyle = '#17191c';
+    // Upper sloped armor hood
+    poly(g, [bx + 3, by - 22, bx + 49, by - 20, bx + 45, by, bx - 1, by - 2]);
+    g.fillStyle = vGrad(by - 22, by, [[0, '#525860'], [1, '#343940']]); g.fill();
+    g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = 1.2; g.stroke();
+    // Hydraulic upper hinge blocks
+    g.fillStyle = '#22262b';
+    g.fillRect(bx + 7, by - 16, 10, 12);
+    g.fillRect(bx + 29, by - 15, 10, 12);
+
+    // Recessed bay housing
+    g.fillStyle = '#121417';
     g.fillRect(bx, by, 46, 44);
-    g.strokeStyle = '#c5b152'; g.lineWidth = 1.8;
+    // Yellow hazard frame
+    g.strokeStyle = '#d4be58'; g.lineWidth = 1.8;
     g.strokeRect(bx + 2, by + 2, 42, 40);
-    g.fillStyle = '#24282d';
-    g.fillRect(bx + 6, by + 7, 34, 28);
-    g.fillStyle = '#d8c35c';
-    g.fillRect(bx + 17, by + 20, 12, 3);
-    g.fillStyle = 'rgba(210,235,255,0.85)';
+    // Inner 3D blast door with bevelled center panel
+    g.fillStyle = vGrad(by + 6, by + 35, [[0, '#32373e'], [1, '#1d2025']]);
+    g.fillRect(bx + 6, by + 6, 34, 29);
+    g.fillStyle = '#15181b';
+    g.fillRect(bx + 12, by + 13, 22, 14);
+    g.fillStyle = '#e0ca60';
+    g.fillRect(bx + 17, by + 19, 12, 2.8);
+    g.fillStyle = 'rgba(215,240,255,0.9)';
     g.fillRect(bx + 8, by + 37, 6, 2);
     g.fillRect(bx + 32, by + 37, 6, 2);
   }
 
-  // Aft mid-hull louvered radiator & thruster block
-  poly(g, [500, 174, 558, 176, 550, 264, 496, 262]);
-  g.fillStyle = '#262a2f'; g.fill();
-  g.strokeStyle = '#c5b152'; g.lineWidth = 2.4;
-  g.beginPath(); g.moveTo(498, 200); g.lineTo(496, 246); g.stroke();
-  g.strokeStyle = '#0e1012'; g.lineWidth = 2.2;
-  for (let y = 202; y <= 244; y += 5) {
-    g.beginPath(); g.moveTo(504, y); g.lineTo(544, y - 2); g.stroke();
+  // Aft mid-hull louvered radiator & RCS thruster block
+  poly(g, [500, 172, 558, 175, 550, 265, 496, 262]);
+  g.fillStyle = vGrad(172, 265, [[0, '#363b42'], [0.5, '#24282d'], [1, '#14171a']]);
+  g.fill();
+  g.strokeStyle = '#d4be58'; g.lineWidth = 2.6;
+  g.beginPath(); g.moveTo(498, 198); g.lineTo(496, 248); g.stroke();
+  // Deep 3D radiator louver slats
+  for (let y = 201; y <= 245; y += 4.5) {
+    g.strokeStyle = '#090a0c'; g.lineWidth = 2.4;
+    g.beginPath(); g.moveTo(504, y); g.lineTo(545, y - 2); g.stroke();
+    g.strokeStyle = 'rgba(180,190,200,0.2)'; g.lineWidth = 0.8;
+    g.beginPath(); g.moveTo(504, y + 1.2); g.lineTo(545, y - 0.8); g.stroke();
   }
   for (const [px, py] of [[526, 194], [526, 254]]) {
-    g.fillStyle = '#121417';
-    g.beginPath(); g.arc(px, py, 7.5, 0, TAU); g.fill();
-    g.strokeStyle = '#4c525a'; g.lineWidth = 1.5; g.stroke();
+    g.fillStyle = '#0c0e11';
+    g.beginPath(); g.arc(px, py, 8, 0, TAU); g.fill();
+    g.strokeStyle = '#5a626c'; g.lineWidth = 1.8; g.stroke();
   }
 
-  // --- 5. Iconic Twin-Winged Bow Armor Shields (Prow) ---
+  // --- 5. Twin-Winged Bow Armor Shields (Prow) with 3D Bevels & Aztek Plating ---
+  // Center nose bar & sensor grill
   poly(g, HULL_SIL.prowNose);
-  g.fillStyle = vGrad(178, 228, '#282c30', '#15171a');
+  g.fillStyle = vGrad(177, 228, [[0, '#363b42'], [0.5, '#202429'], [1, '#111316']]);
   g.fill();
-  g.strokeStyle = '#0c0d0f'; g.lineWidth = 2.2;
-  for (let y = 188; y <= 216; y += 5.5) {
-    g.beginPath(); g.moveTo(58, y); g.lineTo(178, y + 3); g.stroke();
+  g.strokeStyle = '#08090b'; g.lineWidth = 2.4;
+  for (let y = 186; y <= 218; y += 5) {
+    g.beginPath(); g.moveTo(54, y); g.lineTo(180, y + 3); g.stroke();
   }
-  g.fillStyle = '#2d3237';
-  g.fillRect(190, 184, 28, 42);
-  g.strokeStyle = '#121417'; g.lineWidth = 1.8;
-  for (let y = 188; y <= 222; y += 4.5) {
-    g.beginPath(); g.moveTo(193, y); g.lineTo(215, y); g.stroke();
+  // Glowing white sensor strips inside the nose trench (just like Super_Destroyer.webp!)
+  g.fillStyle = 'rgba(225, 242, 255, 0.9)';
+  for (const x of [66, 82, 98, 152, 166]) {
+    g.fillRect(x, 190 + (x - 60) * 0.025, 8, 1.8);
+    g.fillRect(x, 211 + (x - 60) * 0.025, 8, 1.8);
+  }
+  // Vertical ribbed nose bumper block
+  g.fillStyle = vGrad(182, 228, [[0, '#454b53'], [1, '#23272c']]);
+  g.fillRect(188, 183, 30, 44);
+  g.strokeStyle = '#0e1013'; g.lineWidth = 1.8;
+  for (let y = 187; y <= 223; y += 4.2) {
+    g.beginPath(); g.moveTo(192, y); g.lineTo(215, y); g.stroke();
   }
 
-  // Upper Bow Shield
+  // Upper Bow Armor Shield
   poly(g, HULL_SIL.prowTop);
-  g.fillStyle = vGrad(94, 184, '#585e66', '#3d4248', '#2a2e33');
+  g.fillStyle = vGrad(94, 184, [[0, '#6c737c'], [0.35, '#4e545c'], [0.8, '#383d44'], [1, '#262a2f']]);
   g.fill();
-  g.strokeStyle = 'rgba(200,205,210,0.35)'; g.lineWidth = 1.2; g.stroke();
-  g.fillStyle = 'rgba(18,20,23,0.42)';
-  poly(g, [122, 134, 164, 135, 146, 172, 102, 170]); g.fill();
-  poly(g, [170, 135, 198, 136, 180, 173, 152, 172]); g.fill();
-  poly(g, [224, 98, 242, 98, 198, 184, 180, 184]);
-  g.fillStyle = '#23262a'; g.fill();
-  g.strokeStyle = '#d4be58'; g.lineWidth = 3.6;
+  g.save(); g.clip();
+  paintArmorTexture(g, 52, 94, 190, 90, 7707, 0.02);
+  // 3D top & left bevel highlight on upper bow shield
+  poly(g, [96, 94, 242, 98, 236, 106, 100, 102, 60, 178, 52, 178]);
+  g.fillStyle = 'rgba(220, 230, 240, 0.16)'; g.fill();
+  // Recessed dark armor trapezoids
+  g.fillStyle = 'rgba(14, 16, 19, 0.52)';
+  poly(g, [120, 132, 164, 133, 145, 173, 100, 171]); g.fill();
+  poly(g, [170, 133, 198, 134, 179, 174, 151, 173]); g.fill();
+  // Trailing bevel & Super Earth yellow hazard trim
+  poly(g, [222, 98, 242, 98, 198, 184, 178, 184]);
+  g.fillStyle = '#202328'; g.fill();
+  g.restore();
+  g.strokeStyle = 'rgba(215,222,230,0.4)'; g.lineWidth = 1.2; g.stroke();
+  g.strokeStyle = '#dfc85c'; g.lineWidth = 3.8;
   g.beginPath(); g.moveTo(234, 100); g.lineTo(191, 182); g.stroke();
 
-  // Lower Bow Shield
+  // Lower Bow Armor Shield
   poly(g, HULL_SIL.prowBot);
-  g.fillStyle = vGrad(218, 306, '#383c42', '#23262b', '#16181c');
+  g.fillStyle = vGrad(218, 306, [[0, '#464c54'], [0.4, '#30353b'], [0.85, '#1e2126'], [1, '#121417']]);
   g.fill();
-  g.strokeStyle = 'rgba(160,165,170,0.25)'; g.lineWidth = 1; g.stroke();
-  g.fillStyle = 'rgba(10,12,14,0.48)';
-  poly(g, [106, 232, 152, 235, 178, 272, 132, 268]); g.fill();
-  poly(g, [158, 236, 186, 238, 214, 276, 184, 273]); g.fill();
-  g.strokeStyle = '#d4be58'; g.lineWidth = 3.4;
+  g.save(); g.clip();
+  paintArmorTexture(g, 56, 218, 206, 88, 8808, 0.04);
+  // Leading bevel highlight
+  poly(g, [56, 218, 66, 219, 138, 294, 132, 294]);
+  g.fillStyle = 'rgba(200, 210, 220, 0.14)'; g.fill();
+  // Recessed dark armor trapezoids
+  g.fillStyle = 'rgba(8, 10, 12, 0.56)';
+  poly(g, [106, 232, 152, 235, 178, 273, 132, 269]); g.fill();
+  poly(g, [158, 236, 186, 238, 214, 277, 184, 274]); g.fill();
+  g.restore();
+  g.strokeStyle = 'rgba(170,178,186,0.28)'; g.lineWidth = 1.1; g.stroke();
+  g.strokeStyle = '#dfc85c'; g.lineWidth = 3.6;
   g.beginPath(); g.moveTo(193, 228); g.lineTo(255, 303); g.stroke();
 
+  // Bow circular RCS thruster ports
   for (const [px, py] of [[218, 174], [220, 238]]) {
-    g.fillStyle = '#101215';
-    g.beginPath(); g.arc(px, py, 8.5, 0, TAU); g.fill();
-    g.strokeStyle = '#585e66'; g.lineWidth = 1.6; g.stroke();
+    g.fillStyle = '#0c0e11';
+    g.beginPath(); g.arc(px, py, 9, 0, TAU); g.fill();
+    g.strokeStyle = '#646c76'; g.lineWidth = 1.8; g.stroke();
   }
 
   return { canvas: c, x: X0, y: Y0, w: W, h: H };
 }
 
 function renderUnderlight(scale) {
-  const S = SHIP.k * scale, X0 = 30, Y0 = 55, W = 1310, H = 295;
+  const S = Math.max(0.85, SHIP.k * scale * 1.35);
+  const X0 = 30, Y0 = 55, W = 1310, H = 295;
   const c = mk(W * S, H * S), g = c.getContext('2d');
   g.setTransform(S, 0, 0, S, -X0 * S, -Y0 * S);
   const gr = g.createLinearGradient(0, 155, 0, 315);
@@ -499,22 +632,21 @@ function renderBackdrop(scale) {
   g.setTransform(scale, 0, 0, scale, 0, 0);
   const R = mkRng(104729);
 
-  // Rich war-torn orbital sky gradient
-  const sky = g.createLinearGradient(0, 0, 0, 920);
-  sky.addColorStop(0.00, '#040407');
-  sky.addColorStop(0.32, '#0a0709');
-  sky.addColorStop(0.58, '#190b0b');
-  sky.addColorStop(0.78, '#36130f');
-  sky.addColorStop(0.92, '#632114');
-  sky.addColorStop(1.00, '#8c3119');
+  // Deep orbital space to war-torn horizon gradient
+  const sky = g.createLinearGradient(0, 0, 0, 940);
+  sky.addColorStop(0.00, '#030306');
+  sky.addColorStop(0.38, '#080608');
+  sky.addColorStop(0.65, '#160a0a');
+  sky.addColorStop(0.82, '#31110e');
+  sky.addColorStop(0.93, '#5a1e13');
+  sky.addColorStop(1.00, '#822c17');
   g.fillStyle = sky;
   g.fillRect(0, 0, VW, VH);
 
-  // Subtle upper-space nebula & war-smoke glow
   for (const [cx, cy, rx, ry, col, a] of [
-    [980, 760, 980, 260, '220,70,30', 0.25],
-    [325, 275, 420, 220, '120,55,35', 0.12],
-    [1480, 240, 520, 200, '90,35,45', 0.10],
+    [960, 810, 960, 220, '215,65,28', 0.24],
+    [PLANET.x, PLANET.y, 280, 160, '115,52,34', 0.11],
+    [1480, 220, 460, 170, '85,32,42', 0.09],
   ]) {
     g.save();
     g.translate(cx, cy);
@@ -527,17 +659,16 @@ function renderBackdrop(scale) {
     g.restore();
   }
 
-  // Ringed planet geometry
-  const px = 320, py = 275, pr = 148, ringTilt = -0.24;
+  const { x: px, y: py, r: pr, tilt: ringTilt } = PLANET;
 
-  // Starfield (excluding planet disc)
-  for (let i = 0; i < 580; i++) {
-    const x = R() * VW, y = R() * 790;
-    if (Math.hypot(x - px, y - py) < pr - 2) continue;
-    const hFade = 1 - 0.75 * smooth((y - 350) / 450);
+  // Starfield
+  for (let i = 0; i < 640; i++) {
+    const x = R() * VW, y = R() * 830;
+    if (Math.hypot(x - px, y - py) < pr - 1) continue;
+    const hFade = 1 - 0.78 * smooth((y - 420) / 430);
     const a = (0.14 + R() * 0.65) * hFade;
     const warm = R() < 0.35;
-    const sz = R() < 0.08 ? 2.1 : R() < 0.25 ? 1.4 : 1.0;
+    const sz = R() < 0.07 ? 1.8 : R() < 0.24 ? 1.3 : 0.9;
     g.fillStyle = warm ? `rgba(255,225,195,${a})` : `rgba(215,230,255,${a})`;
     g.fillRect(x, y, sz, sz);
   }
@@ -550,11 +681,11 @@ function renderBackdrop(scale) {
     const a0 = front ? 0 : Math.PI;
     const a1 = front ? Math.PI : TAU;
     const bands = [
-      [pr * 1.30, 7, 'rgba(215,150,95,0.14)'],
-      [pr * 1.42, 13, 'rgba(235,175,115,0.26)'],
-      [pr * 1.54, 5, 'rgba(160,105,70,0.13)'],
-      [pr * 1.66, 16, 'rgba(210,145,95,0.20)'],
-      [pr * 1.80, 6, 'rgba(175,115,80,0.10)'],
+      [pr * 1.30, 4.5, 'rgba(215,150,95,0.14)'],
+      [pr * 1.42, 8.5, 'rgba(235,175,115,0.26)'],
+      [pr * 1.54, 3.2, 'rgba(160,105,70,0.13)'],
+      [pr * 1.66, 10.5, 'rgba(210,145,95,0.20)'],
+      [pr * 1.80, 4.0, 'rgba(175,115,80,0.10)'],
     ];
     for (const [r, w, col] of bands) {
       g.strokeStyle = col;
@@ -565,8 +696,8 @@ function renderBackdrop(scale) {
     }
     if (!front) {
       g.globalCompositeOperation = 'source-atop';
-      const sg = g.createRadialGradient(50, -18, pr * 0.2, 50, -18, pr * 1.2);
-      sg.addColorStop(0, 'rgba(5,4,6,0.88)');
+      const sg = g.createRadialGradient(34, -12, pr * 0.2, 34, -12, pr * 1.2);
+      sg.addColorStop(0, 'rgba(5,4,6,0.9)');
       sg.addColorStop(1, 'rgba(5,4,6,0)');
       g.fillStyle = sg;
       g.fillRect(-pr * 2, -pr * 2, pr * 4, pr * 4);
@@ -576,19 +707,18 @@ function renderBackdrop(scale) {
 
   drawRings(false);
 
-  // Soft sunlit crescent glow on upper-left limb (no hard clip circle)
-  const halo = g.createRadialGradient(px - 35, py - 35, pr * 0.5, px - 25, py - 25, pr * 1.25);
-  halo.addColorStop(0, 'rgba(240,145,75,0.16)');
+  // Soft sunlit crescent glow on upper-left limb
+  const halo = g.createRadialGradient(px - 22, py - 22, pr * 0.5, px - 16, py - 16, pr * 1.25);
+  halo.addColorStop(0, 'rgba(240,145,75,0.15)');
   halo.addColorStop(0.65, 'rgba(220,105,45,0.05)');
   halo.addColorStop(1, 'rgba(220,100,45,0)');
   g.fillStyle = halo;
   g.fillRect(px - pr * 1.6, py - pr * 1.6, pr * 3.2, pr * 3.2);
 
-  // Planet body + surface bands + terminator
+  // Planet sphere
   g.save();
   g.beginPath(); g.arc(px, py, pr, 0, TAU); g.clip();
-
-  const pg = g.createRadialGradient(px - 68, py - 62, 14, px + 24, py + 24, pr * 1.08);
+  const pg = g.createRadialGradient(px - 42, py - 38, 10, px + 14, py + 14, pr * 1.08);
   pg.addColorStop(0.00, '#634335');
   pg.addColorStop(0.36, '#3b2721');
   pg.addColorStop(0.68, '#170f0e');
@@ -600,14 +730,13 @@ function renderBackdrop(scale) {
   g.translate(px, py);
   g.rotate(ringTilt * 0.7);
   for (let i = -6; i <= 6; i++) {
-    const by = i * 20 + (R() - 0.5) * 7;
-    const bh = 5 + R() * 11;
+    const by = i * 13 + (R() - 0.5) * 4;
+    const bh = 3 + R() * 7;
     g.fillStyle = i % 2 ? 'rgba(130,82,60,0.09)' : 'rgba(12,6,6,0.18)';
     g.fillRect(-pr, by, pr * 2, bh);
   }
   g.restore();
 
-  // Re-apply terminator shadow over the surface bands so night side is pitch dark
   const term = g.createLinearGradient(px - pr * 0.5, py - pr * 0.5, px + pr * 0.75, py + pr * 0.75);
   term.addColorStop(0, 'rgba(0,0,0,0)');
   term.addColorStop(0.45, 'rgba(5,3,4,0.25)');
@@ -616,25 +745,22 @@ function renderBackdrop(scale) {
   g.fillStyle = term;
   g.fillRect(px - pr, py - pr, pr * 2, pr * 2);
 
-  // Crisp sunlit crescent rim on top-left
   g.strokeStyle = 'rgba(255,175,100,0.55)';
-  g.lineWidth = 3.2;
-  g.beginPath(); g.arc(px, py, pr - 1, Math.PI * 0.88, Math.PI * 1.62); g.stroke();
-  // Subtle red warzone bounce light on bottom edge
+  g.lineWidth = 2.2;
+  g.beginPath(); g.arc(px, py, pr - 0.8, Math.PI * 0.88, Math.PI * 1.62); g.stroke();
   g.strokeStyle = 'rgba(210,65,35,0.22)';
-  g.lineWidth = 2.5;
-  g.beginPath(); g.arc(px, py, pr - 1, Math.PI * 0.15, Math.PI * 0.58); g.stroke();
+  g.lineWidth = 1.8;
+  g.beginPath(); g.arc(px, py, pr - 0.8, Math.PI * 0.15, Math.PI * 0.58); g.stroke();
   g.restore();
 
   drawRings(true);
 
-  // Fiery warzone horizon haze
-  const hz = g.createLinearGradient(0, 640, 0, 880);
+  const hz = g.createLinearGradient(0, 700, 0, 920);
   hz.addColorStop(0.0, 'rgba(140,40,20,0)');
-  hz.addColorStop(0.6, 'rgba(195,60,28,0.35)');
-  hz.addColorStop(1.0, 'rgba(245,100,38,0.58)');
+  hz.addColorStop(0.6, 'rgba(195,60,28,0.34)');
+  hz.addColorStop(1.0, 'rgba(245,100,38,0.55)');
   g.fillStyle = hz;
-  g.fillRect(0, 640, VW, 240);
+  g.fillRect(0, 700, VW, 220);
 
   return c;
 }
@@ -655,38 +781,37 @@ function renderRidge(scale, fn, yMin, topCol, botCol, edgeCol, valleyMistCol) {
 
   if (edgeCol) {
     g.strokeStyle = edgeCol;
-    g.lineWidth = 1.6;
+    g.lineWidth = 1.3;
     g.beginPath();
     for (let x = 0; x <= VW; x += 4) x ? g.lineTo(x, fn(x)) : g.moveTo(x, fn(x));
     g.stroke();
   }
 
-  // Smooth backlit warzone mist rising from the valley behind the NEXT ridge
   if (valleyMistCol) {
-    const mg = g.createLinearGradient(0, yMin + 10, 0, yMin + 115);
+    const mg = g.createLinearGradient(0, yMin + 8, 0, yMin + 88);
     mg.addColorStop(0, 'rgba(0,0,0,0)');
     mg.addColorStop(0.55, valleyMistCol);
     mg.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = mg;
-    g.fillRect(0, yMin + 10, VW, 110);
+    g.fillRect(0, yMin + 8, VW, 85);
   }
   return c;
 }
 
 function renderSmokeBand(scale) {
-  const c = mk(2400 * scale, 220 * scale), g = c.getContext('2d');
+  const c = mk(2400 * scale, 180 * scale), g = c.getContext('2d');
   g.setTransform(scale, 0, 0, scale, 0, 0);
   const R = mkRng(5512);
   for (let i = 0; i < 55; i++) {
-    const x = R() * 2400, y = 110 + (R() - 0.5) * 80, r = 70 + R() * 140;
+    const x = R() * 2400, y = 90 + (R() - 0.5) * 65, r = 55 + R() * 115;
     for (const ox of [-2400, 0, 2400]) {
       const gr = g.createRadialGradient(x + ox, y, 0, x + ox, y, r);
-      gr.addColorStop(0, 'rgba(210,85,45,0.09)');
+      gr.addColorStop(0, 'rgba(210,85,45,0.085)');
       gr.addColorStop(1, 'rgba(120,35,20,0)');
       g.fillStyle = gr;
       g.save();
       g.translate(x + ox, y);
-      g.scale(1, 0.36);
+      g.scale(1, 0.35);
       g.translate(-(x + ox), -y);
       g.fillRect(x + ox - r, y - r, r * 2, r * 2);
       g.restore();
@@ -695,9 +820,13 @@ function renderSmokeBand(scale) {
   return c;
 }
 
-// ---- dynamic state ----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Dynamic State: Main Beam, Transiting Super Destroyers, Dropships & Combat
+// ---------------------------------------------------------------------------
 const st = {
-  beam: { phase: 'on', t: 0, len: 1, I: 1, flick: 1, tx: 1035, ty: 918, glow: 0.95, onFor: 11 },
+  beam: { phase: 'on', t: 0, len: 1, I: 1, flick: 1, tx: 1020, ty: 944, glow: 0.95, onFor: 11 },
+  fleet: [],       // Super Destroyers warping in, holding orbit, and warping out
+  craft: [],       // Eagle / Pelican dropships flying between destroyers and surface
   blueBeacons: [],
   fleetBeams: [],
   pods: [],
@@ -710,37 +839,99 @@ const st = {
   shipBob: 0,
 };
 
+// Spawn a Super Destroyer that either starts on-station or warps in from offscreen,
+// cruises in low orbit, deploys a strike, and then accelerates / warps out!
+function spawnFleetDestroyer(mode = 'warp-in', customSlot = null) {
+  if (st.fleet.length >= 5) return;
+  const slots = [
+    { x: 470, y: 315, k: 0.22 },
+    { x: 1410, y: 265, k: 0.25 },
+    { x: 1140, y: 385, k: 0.15 },
+    { x: 140, y: 410, k: 0.17 },
+    { x: 640, y: 210, k: 0.14 },
+  ];
+  const slot = customSlot || pick(slots);
+  const k = slot.k * range(0.92, 1.08);
+  const holdDur = range(11, 22);
+  const ship = {
+    x: mode === 'warp-in' ? VW + 350 : slot.x,
+    y: slot.y + range(-14, 14),
+    targetX: slot.x + range(-35, 35),
+    startX: VW + 380,
+    exitX: -750,
+    k,
+    state: mode === 'warp-in' ? 'arrive' : 'hold',
+    t: mode === 'hold' ? range(1, holdDur * 0.5) : 0,
+    arriveDur: range(1.1, 1.6),
+    holdDur,
+    departDur: range(1.3, 1.9),
+    driftVx: -range(6, 14) * (k / 0.2),
+    phase: range(0, TAU),
+    warpFlash: 0,
+    fired: false,
+  };
+  st.fleet.push(ship);
+  return ship;
+}
+
+// Spawn a Pelican dropship or Eagle fighter flying between orbit and surface
+function spawnDropship(initialProgress = 0) {
+  if (st.craft.length >= 4) return;
+  const descending = rand() < 0.6;
+  const parent = rand() < 0.55 || !st.fleet.length ? SHIP : pick(st.fleet);
+  const [hx, hy] = shipPt(414, 252, 0, parent);
+  const gx = clamp(hx + range(-340, 340), 140, VW - 140);
+  const gy = farRidge(gx) + 6;
+
+  const x0 = descending ? hx : gx;
+  const y0 = descending ? hy : gy;
+  const x1 = descending ? gx : hx;
+  const y1 = descending ? gy : hy;
+  const cx = (x0 + x1) / 2 + range(-160, 160);
+  const cy = (y0 + y1) / 2 + range(-60, 40);
+  const dur = range(4.5, 7.5);
+
+  st.craft.push({
+    x0, y0, cx, cy, x1, y1,
+    t: initialProgress * dur,
+    dur,
+    size: clamp(parent.k * 2.2, 0.45, 1.0),
+    descending,
+  });
+}
+
 function scheduleBeam(delay) { after(delay, igniteBeam); }
 function igniteBeam() {
   const b = st.beam;
   b.phase = 'ignite'; b.t = 0; b.len = 0;
-  b.tx = range(940, 1160);
-  b.ty = nearRidge(b.tx) + 4;
+  b.tx = range(910, 1110);
+  b.ty = nearRidge(b.tx) + 3;
   b.onFor = range(9, 14);
   after(range(2.2, 4.0), () => dropPod(true));
   after(range(6.5, 8.2), () => dropPod(true));
 }
 
-function dropPod(onTarget = true, customProgress = 0) {
+function dropPod(onTarget = true) {
   if (st.beam.phase !== 'on' && st.beam.phase !== 'ignite') return;
   const bay = pick(POD_BAYS);
   const [sx, sy] = shipPt(bay[0], bay[1], st.shipBob);
-  const offset = onTarget ? range(-6, 6) : range(-140, 140);
+  const offset = onTarget ? range(-5, 5) : range(-110, 110);
   const tx = st.beam.tx + offset;
-  const ty = (onTarget ? nearRidge(tx) : midRidge(tx)) + 4;
+  const ty = (onTarget ? nearRidge(tx) : midRidge(tx)) + 3;
   const dur = range(0.95, 1.25);
-  st.pods.push({ sx, sy, tx, ty, t: customProgress * dur, dur, main: onTarget });
+  st.pods.push({ sx, sy, tx, ty, t: 0, dur, main: onTarget });
 }
 
 function podImpact(p) {
-  st.impacts.push({ t: 0, x: p.tx, y: p.ty, scale: p.main ? 1 : 0.65 });
-  const cnt = p.main ? 52 : 28;
+  const sc = p.main ? 0.65 : 0.42;
+  st.impacts.push({ t: 0, x: p.tx, y: p.ty, scale: sc });
+  const cnt = p.main ? 36 : 20;
   for (let i = 0; i < cnt; i++) {
-    const a = -Math.PI / 2 + range(-1.35, 1.35), sp = range(90, 440) * (p.main ? 1 : 0.75);
+    const a = -Math.PI / 2 + range(-1.3, 1.3), sp = range(65, 310) * sc;
     st.dust.push({
       x: p.tx, y: p.ty,
       vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-      life: range(0.65, 1.7), age: 0, r: range(1.5, 4.2), hot: rand() < 0.6,
+      life: range(0.6, 1.5), age: 0, r: range(1.2, 3.0), hot: rand() < 0.6,
     });
   }
   if (p.main && st.beam.t > st.beam.onFor - 2.5) {
@@ -750,39 +941,39 @@ function podImpact(p) {
   }
 }
 
-function spawnFleetStrike(initialProgress = 0) {
-  const f = pick(FLEET.filter((s) => s.canFire));
+function spawnFleetStrike(ship = null, initialProgress = 0) {
+  const candidates = st.fleet.filter((s) => s.state === 'hold' && s.x > 120 && s.x < VW - 220);
+  const f = ship || (candidates.length ? pick(candidates) : null);
   if (!f) return;
-  const sx = f.x + (f.emit[0] - SHIP.ox) * f.k;
-  const sy = f.y + (f.emit[1] - SHIP.oy) * f.k;
-  const tx = clamp(sx + range(-140, 190), 180, VW - 180);
-  const ty = distMesa(tx) + 4;
-  const dur = range(3.5, 5.5);
-  st.fleetBeams.push({ sx, sy, tx, ty, t: initialProgress * dur, dur });
-  after(0.6, () => {
-    st.booms.push({ x: tx, y: ty, t: 0, life: 2.5, size: range(60, 95), plume: true });
+  const [sx, sy] = shipPt(EMIT[0], EMIT[1], 0, f);
+  const tx = clamp(sx + range(-110, 150), 160, VW - 160);
+  const ty = distMesa(tx) + 3;
+  const dur = range(3.2, 5.0);
+  st.fleetBeams.push({ ship: f, sx, sy, tx, ty, t: initialProgress * dur, dur });
+  after(0.55, () => {
+    st.booms.push({ x: tx, y: ty, t: 0, life: 2.3, size: range(38, 62), plume: true });
   });
 }
 
 function spawnBlueBeacon(initialProgress = 0) {
   if (st.blueBeacons.length >= 2) return;
-  let x = range(220, 420);
-  if (st.blueBeacons.length === 1) x = range(1740, 1840);
-  const y = midRidge(x) + 3;
+  let x = range(220, 440);
+  if (st.blueBeacons.length === 1) x = range(1620, 1810);
+  const y = midRidge(x) + 2;
   const dur = range(7, 12);
   st.blueBeacons.push({ x, y, t: initialProgress * dur, dur });
 }
 
 function farBoom() {
   let x = range(140, 1780);
-  if (Math.abs(x - st.beam.tx) < 160) x += 300;
-  const big = rand() < 0.42;
+  if (Math.abs(x - st.beam.tx) < 130) x += 240;
+  const big = rand() < 0.40;
   const useMid = rand() < 0.45;
-  const y = (useMid ? farRidge(x) : distMesa(x)) + range(-2, 8);
+  const y = (useMid ? farRidge(x) : distMesa(x)) + range(-2, 6);
   st.booms.push({
     x, y, t: 0,
-    life: big ? range(2.2, 3.2) : range(1.4, 2.0),
-    size: big ? range(72, 118) : range(34, 62),
+    life: big ? range(2.0, 2.9) : range(1.2, 1.8),
+    size: big ? range(45, 74) : range(22, 42),
     plume: big,
   });
 }
@@ -792,15 +983,15 @@ function tracerBurst() {
   const x0 = range(160, 1760);
   const y0 = (rand() < 0.5 ? farRidge(x0) : midRidge(x0)) - 2;
   const ang = automaton ? range(-0.95, -0.35) : range(-2.6, -1.9);
-  const sp = range(460, 740);
+  const sp = range(380, 620);
   const n = 4 + Math.floor(rand() * 5);
   for (let i = 0; i < n; i++) {
     after(i * range(0.06, 0.14), () => {
       const a = ang + range(-0.06, 0.06);
       st.tracers.push({
-        x: x0 + range(-18, 18), y: y0,
+        x: x0 + range(-14, 14), y: y0,
         vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-        t: 0, life: range(0.65, 1.15),
+        t: 0, life: range(0.6, 1.05),
         c: automaton ? '255,65,55' : '255,215,95',
       });
     });
@@ -809,41 +1000,54 @@ function tracerBurst() {
 
 LW.start({
   init() {
-    for (let i = 0; i < 55; i++) {
+    for (let i = 0; i < 65; i++) {
       st.twinkles.push({
-        x: range(0, VW), y: range(30, 680),
-        ph: range(0, TAU), rate: range(0.4, 1.7), s: range(1, 2.3),
+        x: range(0, VW), y: range(25, 740),
+        ph: range(0, TAU), rate: range(0.4, 1.7), s: range(0.9, 1.9),
       });
     }
+
+    // Initial squadron in orbit + scheduled FTL arrivals/departures
+    spawnFleetDestroyer('hold', { x: 470, y: 310, k: 0.22 });
+    spawnFleetDestroyer('hold', { x: 1380, y: 265, k: 0.25 });
+    spawnFleetDestroyer('hold', { x: 1120, y: 385, k: 0.15 });
+    spawnDropship(0.35);
+    spawnDropship(0.68);
+
     igniteBeam();
     st.beam.phase = 'on'; st.beam.len = 1; st.beam.I = 1; st.beam.glow = 0.95;
     spawnBlueBeacon(0.15);
-    spawnFleetStrike(0.1);
+    spawnFleetStrike(st.fleet[0], 0.1);
     for (let i = 0; i < 4; i++) farBoom();
-    // Ensure a pod is mid-flight around t=8 and another impacts around t=4
+
+    // Guaranteed dynamic events around t=8 for still renders
+    after(7.1, () => spawnFleetDestroyer('warp-in', { x: 140, y: 395, k: 0.18 }));
+    after(6.0, () => spawnDropship(0));
     after(7.45, () => dropPod(true));
-    after(6.8, () => spawnFleetStrike(0));
+    after(6.8, () => spawnFleetStrike(null, 0));
     after(6.5, () => spawnBlueBeacon(0));
 
-    every(1.8, 5.2, farBoom);
-    every(2.5, 7.5, tracerBurst);
-    every(5.0, 11.0, () => spawnFleetStrike(0));
-    every(6.0, 13.0, () => spawnBlueBeacon(0));
+    every(1.8, 4.8, farBoom);
+    every(2.5, 7.0, tracerBurst);
+    every(4.5, 9.5, () => spawnFleetStrike(null, 0));
+    every(6.0, 12.0, () => spawnBlueBeacon(0));
+    every(4.0, 8.5, () => spawnDropship(0));
+    every(5.5, 11.0, () => spawnFleetDestroyer('warp-in'));
   },
   resize(view) {
     const s = Math.min(2, Math.max(0.5, view.scale));
     layers.backdrop = renderBackdrop(s);
-    layers.mesa = renderRidge(s, distMesa, 700, '#2e1410', '#180a09', 'rgba(225,85,42,0.36)', 'rgba(215,75,35,0.16)');
-    layers.far = renderRidge(s, farRidge, 760, '#220f0d', '#120808', 'rgba(185,68,36,0.40)', 'rgba(185,60,30,0.14)');
-    layers.mid = renderRidge(s, midRidge, 820, '#150b0a', '#0a0606', 'rgba(135,48,28,0.44)', 'rgba(140,42,22,0.12)');
-    layers.near = renderRidge(s, nearRidge, 870, '#0a0606', '#030202', 'rgba(95,35,22,0.55)', null);
+    layers.mesa = renderRidge(s, distMesa, 760, '#2e1410', '#180a09', 'rgba(225,85,42,0.34)', 'rgba(215,75,35,0.15)');
+    layers.far = renderRidge(s, farRidge, 810, '#220f0d', '#120808', 'rgba(185,68,36,0.38)', 'rgba(185,60,30,0.13)');
+    layers.mid = renderRidge(s, midRidge, 855, '#150b0a', '#0a0606', 'rgba(135,48,28,0.42)', 'rgba(140,42,22,0.11)');
+    layers.near = renderRidge(s, nearRidge, 900, '#0a0606', '#030202', 'rgba(95,35,22,0.52)', null);
     layers.smoke = renderSmokeBand(s);
     layers.ship = renderShip(s);
     layers.under = renderUnderlight(s);
   },
   update(dt, t) {
     const b = st.beam;
-    st.shipBob = Math.sin(t * 0.32) * 3.5 + Math.sin(t * 0.13 + 1.1) * 2;
+    st.shipBob = Math.sin(t * 0.32) * 2.2 + Math.sin(t * 0.13 + 1.1) * 1.2;
     b.t += dt;
     if (b.phase === 'ignite') {
       b.len = 1 - Math.pow(1 - clamp(b.t / 0.42, 0, 1), 3);
@@ -863,6 +1067,47 @@ LW.start({
     const target = b.len >= 1 ? b.I : 0;
     b.glow += (target - b.glow) * clamp(dt * (target > b.glow ? 8 : 2.4), 0, 1);
 
+    // Update dynamic fleet Super Destroyers (FTL warp-in -> orbital cruise -> FTL warp-out)
+    for (let i = st.fleet.length - 1; i >= 0; i--) {
+      const f = st.fleet[i];
+      f.t += dt;
+      if (f.state === 'arrive') {
+        const u = clamp(f.t / f.arriveDur, 0, 1);
+        const ease = 1 - Math.pow(1 - u, 4); // sharp FTL deceleration
+        f.x = lerp(f.startX, f.targetX, ease);
+        f.warpFlash = Math.sin(Math.PI * clamp(u * 1.4, 0, 1)) * (1 - u * 0.7);
+        if (u >= 1) {
+          f.state = 'hold';
+          f.t = 0;
+          f.warpFlash = 0;
+        }
+      } else if (f.state === 'hold') {
+        f.x += f.driftVx * dt;
+        if (!f.fired && f.t > 1.8 && rand() < dt * 0.35) {
+          f.fired = true;
+          spawnFleetStrike(f, 0);
+        }
+        if (f.t >= f.holdDur) {
+          f.state = 'depart';
+          f.t = 0;
+          f.startX = f.x;
+        }
+      } else if (f.state === 'depart') {
+        const u = clamp(f.t / f.departDur, 0, 1);
+        const ease = Math.pow(u, 3.5); // FTL spool-up & jump acceleration
+        f.x = lerp(f.startX, f.exitX, ease);
+        f.warpFlash = Math.sin(Math.PI * u);
+        if (u >= 1) st.fleet.splice(i, 1);
+      }
+    }
+
+    // Update Pelican / Eagle dropships
+    for (let i = st.craft.length - 1; i >= 0; i--) {
+      const c = st.craft[i];
+      c.t += dt;
+      if (c.t >= c.dur) st.craft.splice(i, 1);
+    }
+
     for (let i = st.pods.length - 1; i >= 0; i--) {
       const p = st.pods[i];
       p.t += dt;
@@ -870,38 +1115,43 @@ LW.start({
     }
     for (let i = st.impacts.length - 1; i >= 0; i--) {
       st.impacts[i].t += dt;
-      if (st.impacts[i].t > 2.4) st.impacts.splice(i, 1);
+      if (st.impacts[i].t > 2.2) st.impacts.splice(i, 1);
     }
     for (let i = st.fleetBeams.length - 1; i >= 0; i--) {
-      st.fleetBeams[i].t += dt;
-      if (st.fleetBeams[i].t >= st.fleetBeams[i].dur) st.fleetBeams.splice(i, 1);
+      const fb = st.fleetBeams[i];
+      fb.t += dt;
+      if (fb.ship) {
+        const [sx, sy] = shipPt(EMIT[0], EMIT[1], 0, fb.ship);
+        fb.sx = sx; fb.sy = sy;
+      }
+      if (fb.t >= fb.dur) st.fleetBeams.splice(i, 1);
     }
     for (let i = st.blueBeacons.length - 1; i >= 0; i--) {
       st.blueBeacons[i].t += dt;
       if (st.blueBeacons[i].t >= st.blueBeacons[i].dur) st.blueBeacons.splice(i, 1);
     }
     for (const d of st.dust) {
-      d.age += dt; d.vy += 520 * dt; d.vx *= 1 - dt * 1.4;
+      d.age += dt; d.vy += 420 * dt; d.vx *= 1 - dt * 1.4;
       d.x += d.vx * dt; d.y += d.vy * dt;
     }
-    st.dust = st.dust.filter((d) => d.age < d.life && d.y < nearRidge(d.x) + 24);
+    st.dust = st.dust.filter((d) => d.age < d.life && d.y < nearRidge(d.x) + 18);
     for (const m of st.booms) m.t += dt;
     st.booms = st.booms.filter((m) => m.t < m.life);
     for (const r of st.tracers) {
-      r.t += dt; r.vy += 90 * dt; r.x += r.vx * dt; r.y += r.vy * dt;
+      r.t += dt; r.vy += 80 * dt; r.x += r.vx * dt; r.y += r.vy * dt;
     }
     st.tracers = st.tracers.filter((r) => r.t < r.life);
 
-    if (b.glow > 0.3 && rand() < dt * 16) {
+    if (b.glow > 0.3 && rand() < dt * 14) {
       st.embers.push({
-        x: b.tx + range(-65, 65), y: b.ty - range(0, 12),
-        vx: range(-18, 18), vy: -range(28, 78),
-        age: 0, life: range(1.5, 3.6),
+        x: b.tx + range(-42, 42), y: b.ty - range(0, 8),
+        vx: range(-14, 14), vy: -range(22, 62),
+        age: 0, life: range(1.4, 3.2),
       });
     }
     for (const e of st.embers) {
       e.age += dt;
-      e.x += (e.vx + Math.sin(e.age * 3 + e.x) * 14) * dt;
+      e.x += (e.vx + Math.sin(e.age * 3 + e.x) * 10) * dt;
       e.y += e.vy * dt;
     }
     st.embers = st.embers.filter((e) => e.age < e.life);
@@ -914,29 +1164,97 @@ LW.start({
     // Twinkling stars
     ctx.globalCompositeOperation = 'lighter';
     for (const s of st.twinkles) {
-      if (Math.hypot(s.x - 320, s.y - 275) < 152) continue;
+      if (Math.hypot(s.x - PLANET.x, s.y - PLANET.y) < PLANET.r + 3) continue;
       const a = 0.25 + 0.75 * Math.max(0, Math.sin(t * s.rate + s.ph)) ** 3;
       ctx.fillStyle = `rgba(255,235,215,${a * 0.75})`;
       ctx.fillRect(s.x, s.y, s.s, s.s);
     }
 
-    // Distant fleet Super Destroyers in background orbit
+    // Dynamic Fleet Super Destroyers (sorted far-to-near by scale)
     ctx.globalCompositeOperation = 'source-over';
-    for (const f of FLEET) {
-      const fbob = Math.sin(t * 0.26 + f.phase) * 2;
-      const fx = f.x, fy = f.y + fbob;
+    const sortedFleet = st.fleet.slice().sort((a, b) => a.k - b.k);
+    for (const f of sortedFleet) {
+      const fbob = Math.sin(t * 0.28 + f.phase) * 1.4;
+      const fx = f.x + (L.x - SHIP.ox) * f.k;
+      const fy = f.y + (L.y - SHIP.oy) * f.k + fbob;
+      const fw = L.w * f.k, fh = L.h * f.k;
+
+      // FTL Warp Jump light streak during arrival / departure
+      if (f.warpFlash > 0.01) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const wy = f.y + (205 - SHIP.oy) * f.k + fbob;
+        const streakLen = (280 + 520 * f.warpFlash) * (f.k / 0.2);
+        const sx0 = f.state === 'arrive' ? fx + fw * 0.4 : fx + fw * 0.2;
+        const sg = ctx.createLinearGradient(sx0, wy, sx0 + streakLen, wy);
+        sg.addColorStop(0, `rgba(200, 240, 255, ${0.85 * f.warpFlash})`);
+        sg.addColorStop(0.3, `rgba(90, 175, 255, ${0.45 * f.warpFlash})`);
+        sg.addColorStop(1, 'rgba(40, 110, 255, 0)');
+        ctx.fillStyle = sg;
+        ctx.fillRect(sx0, wy - 16 * f.k, streakLen, 32 * f.k);
+        ctx.restore();
+      }
+
       ctx.save();
-      ctx.globalAlpha = 0.58 + f.k * 1.1;
-      ctx.drawImage(L.canvas, fx, fy, L.w * f.k, L.h * f.k);
+      ctx.globalAlpha = clamp(0.62 + f.k * 1.3, 0.65, 0.96);
+      ctx.drawImage(L.canvas, fx, fy, fw, fh);
       ctx.restore();
+
+      // Fleet ship engine plumes
       ctx.globalCompositeOperation = 'lighter';
-      const ex = fx + (1274 - SHIP.ox) * f.k, ey = fy + (214 - SHIP.oy) * f.k;
-      const eg = ctx.createLinearGradient(ex, ey, ex + 80 * f.k, ey);
-      eg.addColorStop(0, 'rgba(160,215,255,0.75)');
-      eg.addColorStop(1, 'rgba(70,140,255,0)');
+      const [ex0, ey0] = shipPt(1274, 214, fbob, f);
+      const pLen = (75 + f.warpFlash * 140) * f.k;
+      const eg = ctx.createLinearGradient(ex0, ey0, ex0 + pLen, ey0);
+      eg.addColorStop(0, `rgba(200,240,255,${0.88 + f.warpFlash * 0.12})`);
+      eg.addColorStop(0.35, 'rgba(100,185,255,0.55)');
+      eg.addColorStop(1, 'rgba(60,130,255,0)');
       ctx.fillStyle = eg;
-      ctx.fillRect(ex, ey - 5 * f.k, 80 * f.k, 10 * f.k);
+      ctx.fillRect(ex0, ey0 - 7 * f.k, pLen, 14 * f.k);
       ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // Pelican Dropships & Eagle Fighters flying along curved trajectories
+    for (const c of st.craft) {
+      const u = clamp(c.t / c.dur, 0, 1);
+      const inv = 1 - u;
+      const x = inv * inv * c.x0 + 2 * inv * u * c.cx + u * u * c.x1;
+      const y = inv * inv * c.y0 + 2 * inv * u * c.cy + u * u * c.y1;
+      const dx = 2 * inv * (c.cx - c.x0) + 2 * u * (c.x1 - c.cx);
+      const dy = 2 * inv * (c.cy - c.y0) + 2 * u * (c.y1 - c.cy);
+      const ang = Math.atan2(dy, dx);
+      const fade = smooth(u / 0.12) * (1 - smooth((u - 0.85) / 0.15));
+      const sc = c.size * (c.descending ? lerp(0.85, 0.55, u) : lerp(0.55, 0.85, u));
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      ctx.scale(sc, sc);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = fade;
+
+      // Twin engine plasma trail behind dropship
+      const tg = ctx.createLinearGradient(-44, 0, -6, 0);
+      tg.addColorStop(0, 'rgba(100,190,255,0)');
+      tg.addColorStop(1, 'rgba(190,235,255,0.85)');
+      ctx.fillStyle = tg;
+      ctx.fillRect(-44, -2.5, 38, 2);
+      ctx.fillRect(-44, 0.5, 38, 2);
+
+      // Thruster core glow
+      const rg = ctx.createRadialGradient(-7, 0, 0, -7, 0, 9);
+      rg.addColorStop(0, 'rgba(220,248,255,0.95)');
+      rg.addColorStop(1, 'rgba(80,165,255,0)');
+      ctx.fillStyle = rg;
+      ctx.fillRect(-16, -9, 18, 18);
+
+      // Pelican / Eagle angular silhouette
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#242930';
+      poly(ctx, [-8, -3.5, 6, -2.5, 12, 0, 6, 2.5, -8, 3.5, -5, 0]);
+      ctx.fill();
+      ctx.fillStyle = '#d4be58';
+      ctx.fillRect(-2, -1.2, 6, 0.9);
+      ctx.restore();
     }
 
     // Fleet orbital laser beams
@@ -944,29 +1262,29 @@ LW.start({
     for (const fb of st.fleetBeams) {
       const p = fb.t / fb.dur;
       const a = smooth(p / 0.15) * (1 - smooth((p - 0.75) / 0.25));
-      for (const [w, al] of [[14, 0.08], [6, 0.22], [2, 0.65]]) {
+      for (const [w, al] of [[9, 0.08], [4, 0.24], [1.4, 0.70]]) {
         ctx.strokeStyle = `rgba(255,90,55,${al * a})`;
         ctx.lineWidth = w;
         ctx.beginPath(); ctx.moveTo(fb.sx, fb.sy); ctx.lineTo(fb.tx, fb.ty); ctx.stroke();
       }
     }
 
-    // Distant 500kg explosions & artillery flashes
+    // Distant explosions & artillery flashes (scaled down)
     for (const m of st.booms) {
       const p = m.t / m.life;
       const flash = Math.max(0, 1 - p * 2.2);
       const glow = Math.sin(Math.PI * Math.min(1, p * 1.35));
       const r = m.size * (0.55 + p * 0.85);
-      const g = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, r * 2.5);
+      const g = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, r * 2.4);
       g.addColorStop(0, `rgba(255,${220 - 85 * p},130,${0.95 * flash + 0.3 * glow})`);
       g.addColorStop(0.32, `rgba(240,105,35,${0.42 * glow})`);
       g.addColorStop(1, 'rgba(130,35,15,0)');
       ctx.fillStyle = g;
-      ctx.fillRect(m.x - r * 2.5, m.y - r * 2.5, r * 5, r * 5);
+      ctx.fillRect(m.x - r * 2.4, m.y - r * 2.4, r * 4.8, r * 4.8);
       if (m.plume && p < 0.75) {
-        const domeR = r * (0.4 + p * 1.1);
-        ctx.strokeStyle = `rgba(255,190,120,${(1 - p / 0.75) * 0.45})`;
-        ctx.lineWidth = 2;
+        const domeR = r * (0.4 + p * 1.05);
+        ctx.strokeStyle = `rgba(255,190,120,${(1 - p / 0.75) * 0.42})`;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(m.x, m.y, domeR, Math.PI, TAU);
         ctx.stroke();
@@ -976,20 +1294,20 @@ LW.start({
     // AA / Automaton laser crossfire
     for (const r of st.tracers) {
       const a = 1 - r.t / r.life;
-      ctx.strokeStyle = `rgba(${r.c},${a * 0.35})`;
-      ctx.lineWidth = 5;
-      ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(r.x - r.vx * 0.055, r.y - r.vy * 0.055); ctx.stroke();
+      ctx.strokeStyle = `rgba(${r.c},${a * 0.32})`;
+      ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(r.x - r.vx * 0.048, r.y - r.vy * 0.048); ctx.stroke();
       ctx.strokeStyle = `rgba(${r.c},${a})`;
-      ctx.lineWidth = 1.8;
-      ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(r.x - r.vx * 0.055, r.y - r.vy * 0.055); ctx.stroke();
+      ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(r.x - r.vx * 0.048, r.y - r.vy * 0.048); ctx.stroke();
     }
 
     // Rank 0 & 1 ridges + drifting war smoke
     ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(layers.mesa, 0, 0, VW, VH);
-    const smx = -((t * 14) % 2400);
-    ctx.drawImage(layers.smoke, smx, 665, 2400, 220);
-    ctx.drawImage(layers.smoke, smx + 2400, 665, 2400, 220);
+    const smx = -((t * 12) % 2400);
+    ctx.drawImage(layers.smoke, smx, 735, 2400, 180);
+    ctx.drawImage(layers.smoke, smx + 2400, 735, 2400, 180);
     ctx.drawImage(layers.far, 0, 0, VW, VH);
 
     // Secondary blue support-weapon stratagem beacons on mid ridge
@@ -997,71 +1315,71 @@ LW.start({
     for (const bb of st.blueBeacons) {
       const p = bb.t / bb.dur;
       const a = smooth(p / 0.12) * (1 - smooth((p - 0.82) / 0.18));
-      const bg = ctx.createLinearGradient(bb.x, bb.y, bb.x, bb.y - 340);
-      bg.addColorStop(0, `rgba(90,205,255,${0.85 * a})`);
-      bg.addColorStop(0.45, `rgba(60,165,255,${0.25 * a})`);
+      const bg = ctx.createLinearGradient(bb.x, bb.y, bb.x, bb.y - 240);
+      bg.addColorStop(0, `rgba(90,205,255,${0.82 * a})`);
+      bg.addColorStop(0.45, `rgba(60,165,255,${0.24 * a})`);
       bg.addColorStop(1, 'rgba(60,165,255,0)');
       ctx.strokeStyle = bg;
-      ctx.lineWidth = 6;
-      ctx.beginPath(); ctx.moveTo(bb.x, bb.y); ctx.lineTo(bb.x, bb.y - 340); ctx.stroke();
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 4.2;
+      ctx.beginPath(); ctx.moveTo(bb.x, bb.y); ctx.lineTo(bb.x, bb.y - 240); ctx.stroke();
+      ctx.lineWidth = 1.2;
       ctx.strokeStyle = `rgba(210,245,255,${0.8 * a})`;
-      ctx.beginPath(); ctx.moveTo(bb.x, bb.y); ctx.lineTo(bb.x, bb.y - 260); ctx.stroke();
-      const rg = ctx.createRadialGradient(bb.x, bb.y, 0, bb.x, bb.y, 55);
-      rg.addColorStop(0, `rgba(110,215,255,${0.6 * a})`);
+      ctx.beginPath(); ctx.moveTo(bb.x, bb.y); ctx.lineTo(bb.x, bb.y - 185); ctx.stroke();
+      const rg = ctx.createRadialGradient(bb.x, bb.y, 0, bb.x, bb.y, 38);
+      rg.addColorStop(0, `rgba(110,215,255,${0.55 * a})`);
       rg.addColorStop(1, 'rgba(50,140,255,0)');
       ctx.fillStyle = rg;
-      ctx.fillRect(bb.x - 55, bb.y - 55, 110, 110);
+      ctx.fillRect(bb.x - 38, bb.y - 38, 76, 76);
     }
 
     ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(layers.mid, 0, 0, VW, VH);
 
-    // Main red stratagem orbital beam
+    // Main red stratagem orbital beam (scaled down to match flagship)
     const [ex, ey] = shipPt(EMIT[0], EMIT[1], bob);
     ctx.globalCompositeOperation = 'lighter';
     if (b.len > 0 && b.I > 0.01) {
       const x2 = lerp(ex, b.tx, b.len), y2 = lerp(ey, b.ty, b.len), I = clamp(b.I, 0, 1.4);
       ctx.lineCap = 'round';
       for (const [w, a, col] of [
-        [68, 0.06, '220,45,30'],
-        [36, 0.12, '240,55,40'],
-        [16, 0.28, '255,75,55'],
-        [6, 0.65, '255,140,110'],
-        [2.4, 0.96, '255,235,220'],
+        [38, 0.06, '220,45,30'],
+        [20, 0.12, '240,55,40'],
+        [9, 0.28, '255,75,55'],
+        [3.6, 0.65, '255,140,110'],
+        [1.5, 0.96, '255,235,220'],
       ]) {
         ctx.strokeStyle = `rgba(${col},${a * I})`;
         ctx.lineWidth = w;
         ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(x2, y2); ctx.stroke();
       }
-      const eg = ctx.createRadialGradient(ex, ey, 0, ex, ey, 85);
+      const eg = ctx.createRadialGradient(ex, ey, 0, ex, ey, 48);
       eg.addColorStop(0, `rgba(255,150,120,${0.85 * I})`);
       eg.addColorStop(0.4, `rgba(255,65,45,${0.35 * I})`);
       eg.addColorStop(1, 'rgba(255,50,35,0)');
       ctx.fillStyle = eg;
-      ctx.fillRect(ex - 85, ey - 85, 170, 170);
+      ctx.fillRect(ex - 48, ey - 48, 96, 96);
     }
 
     // Ground glow behind near ridge
     if (b.glow > 0.01) {
-      const gg = ctx.createRadialGradient(b.tx, b.ty, 0, b.tx, b.ty, 290);
-      gg.addColorStop(0, `rgba(255,105,75,${0.82 * b.glow})`);
-      gg.addColorStop(0.32, `rgba(235,60,40,${0.35 * b.glow})`);
+      const gg = ctx.createRadialGradient(b.tx, b.ty, 0, b.tx, b.ty, 185);
+      gg.addColorStop(0, `rgba(255,105,75,${0.80 * b.glow})`);
+      gg.addColorStop(0.32, `rgba(235,60,40,${0.32 * b.glow})`);
       gg.addColorStop(1, 'rgba(160,25,15,0)');
       ctx.fillStyle = gg;
-      ctx.fillRect(b.tx - 290, b.ty - 290, 580, 580);
+      ctx.fillRect(b.tx - 185, b.ty - 185, 370, 370);
     }
 
-    // Hellpods streaking down from the destroyer (tapered plasma wake)
+    // Hellpods streaking down from the flagship (tapered plasma wake, scaled down)
     for (const pod of st.pods) {
       const p = pod.t / pod.dur, e = p * p;
       const px = lerp(pod.sx, pod.tx, e), py = lerp(pod.sy, pod.ty, e);
-      const tl = 0.22 + 0.30 * p;
+      const tl = 0.20 + 0.26 * p;
       const qx = lerp(pod.sx, pod.tx, Math.max(0, e - tl));
       const qy = lerp(pod.sy, pod.ty, Math.max(0, e - tl));
       const dx = px - qx, dy = py - qy, L0 = Math.hypot(dx, dy) || 1;
       const nx = -dy / L0, ny = dx / L0;
-      const wHead = pod.main ? 5.5 : 3.8;
+      const wHead = pod.main ? 3.2 : 2.2;
 
       const tg = ctx.createLinearGradient(qx, qy, px, py);
       tg.addColorStop(0, 'rgba(240,95,30,0)');
@@ -1075,7 +1393,7 @@ LW.start({
       ctx.closePath();
       ctx.fill();
 
-      const hr = pod.main ? 42 : 28;
+      const hr = pod.main ? 24 : 16;
       const hg = ctx.createRadialGradient(px, py, 0, px, py, hr);
       hg.addColorStop(0, 'rgba(255,250,225,1)');
       hg.addColorStop(0.32, 'rgba(255,180,75,0.78)');
@@ -1092,19 +1410,19 @@ LW.start({
     if (b.glow > 0.01) {
       ctx.save();
       ctx.translate(b.tx, b.ty);
-      ctx.scale(1, 0.28);
-      const sg = ctx.createRadialGradient(0, 0, 0, 0, 0, 190);
-      sg.addColorStop(0, `rgba(255,135,100,${0.62 * b.glow})`);
+      ctx.scale(1, 0.26);
+      const sg = ctx.createRadialGradient(0, 0, 0, 0, 0, 125);
+      sg.addColorStop(0, `rgba(255,135,100,${0.60 * b.glow})`);
       sg.addColorStop(1, 'rgba(255,60,40,0)');
       ctx.fillStyle = sg;
-      ctx.fillRect(-190, -190, 380, 380);
+      ctx.fillRect(-125, -125, 250, 250);
       ctx.restore();
     }
 
     for (const imp of st.impacts) {
       const k = imp.t, fl = Math.max(0, 1 - k * 2.4) * imp.scale;
       if (fl > 0) {
-        const R0 = 400 * imp.scale;
+        const R0 = 320 * imp.scale;
         const fg = ctx.createRadialGradient(imp.x, imp.y, 0, imp.x, imp.y, R0);
         fg.addColorStop(0, `rgba(255,245,210,${fl})`);
         fg.addColorStop(0.25, `rgba(255,155,65,${0.55 * fl})`);
@@ -1112,10 +1430,10 @@ LW.start({
         ctx.fillStyle = fg;
         ctx.fillRect(imp.x - R0, imp.y - R0, R0 * 2, R0 * 2);
       }
-      const rr = (32 + k * 440) * imp.scale;
+      const rr = (22 + k * 340) * imp.scale;
       const ra = Math.max(0, 0.55 - k * 0.45) * imp.scale;
       ctx.strokeStyle = `rgba(255,180,115,${ra})`;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 2.2;
       ctx.beginPath(); ctx.ellipse(imp.x, imp.y, rr, rr * 0.18, 0, 0, TAU); ctx.stroke();
     }
 
@@ -1127,15 +1445,15 @@ LW.start({
     for (const e of st.embers) {
       const a = Math.sin(Math.PI * e.age / e.life);
       ctx.fillStyle = `rgba(255,150,75,${a * 0.9})`;
-      ctx.fillRect(e.x, e.y, 2.2, 2.2);
+      ctx.fillRect(e.x, e.y, 1.6, 1.6);
     }
 
-    // Main Super Destroyer (drawn over beam origin)
+    // Flagship Super Destroyer (drawn over beam origin)
     ctx.globalCompositeOperation = 'source-over';
     const [sx, sy] = shipPt(L.x, L.y, bob);
     ctx.drawImage(L.canvas, sx, sy, L.w * SHIP.k, L.h * SHIP.k);
 
-    // Red underlight reflection on hull
+    // Red underlight reflection on flagship hull
     ctx.globalCompositeOperation = 'lighter';
     const ul = clamp(b.I * (b.len > 0 ? 1 : 0), 0, 1) * 0.58 +
       (st.impacts.length ? Math.max(0, 0.42 - st.impacts[0].t * 0.4) : 0);
@@ -1145,39 +1463,39 @@ LW.start({
       ctx.globalAlpha = 1;
     }
 
-    // Ion engine plumes at the stern
+    // Flagship ion engine plumes
     for (const [i, e] of ENGINES.entries()) {
       const [x, y] = shipPt(e[0], e[1], bob);
       const f = (0.78 + 0.22 * Math.sin(t * 24 + i * 1.9) * Math.sin(t * 7.5 + i)) * e[2];
-      const len = 92 * f;
+      const len = 56 * f;
       const g = ctx.createLinearGradient(x, y, x + len, y);
       g.addColorStop(0, `rgba(220,245,255,${0.95 * f})`);
       g.addColorStop(0.28, `rgba(120,195,255,${0.7 * f})`);
       g.addColorStop(1, 'rgba(50,130,255,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.moveTo(x, y - 3.2 * e[2]);
+      ctx.moveTo(x, y - 2.0 * e[2]);
       ctx.lineTo(x + len, y);
-      ctx.lineTo(x, y + 3.2 * e[2]);
+      ctx.lineTo(x, y + 2.0 * e[2]);
       ctx.closePath();
       ctx.fill();
 
-      const r = ctx.createRadialGradient(x, y, 0, x, y, 24 * e[2]);
+      const r = ctx.createRadialGradient(x, y, 0, x, y, 15 * e[2]);
       r.addColorStop(0, `rgba(165,220,255,${0.75 * f})`);
       r.addColorStop(1, 'rgba(60,140,255,0)');
       ctx.fillStyle = r;
-      ctx.fillRect(x - 24, y - 24, 48, 48);
+      ctx.fillRect(x - 16, y - 16, 32, 32);
     }
 
-    // Glowing blue circular RCS thruster ports on bow & mid-hull
+    // Glowing blue circular RCS thruster ports on flagship
     for (const p of PORTS) {
       const [x, y] = shipPt(p[0], p[1], bob);
-      const r = ctx.createRadialGradient(x, y, 0, x, y, 11);
+      const r = ctx.createRadialGradient(x, y, 0, x, y, 7);
       r.addColorStop(0, 'rgba(210,245,255,0.95)');
       r.addColorStop(0.35, 'rgba(100,195,255,0.65)');
       r.addColorStop(1, 'rgba(50,130,255,0)');
       ctx.fillStyle = r;
-      ctx.fillRect(x - 11, y - 11, 22, 22);
+      ctx.fillRect(x - 7, y - 7, 14, 14);
     }
 
     // Blinking navigation & mast strobes
@@ -1185,11 +1503,11 @@ LW.start({
       const on = (t * l.rate + l.ph) % 1 < 0.22;
       if (!on) continue;
       const [x, y] = shipPt(l.p[0], l.p[1], bob);
-      const r = ctx.createRadialGradient(x, y, 0, x, y, 13);
+      const r = ctx.createRadialGradient(x, y, 0, x, y, 8.5);
       r.addColorStop(0, `rgba(${l.c},1)`);
       r.addColorStop(1, `rgba(${l.c},0)`);
       ctx.fillStyle = r;
-      ctx.fillRect(x - 13, y - 13, 26, 26);
+      ctx.fillRect(x - 9, y - 9, 18, 18);
     }
     ctx.globalCompositeOperation = 'source-over';
   },
